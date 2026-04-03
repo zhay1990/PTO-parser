@@ -1,14 +1,6 @@
 #include "options.hh"
 #include "logger.hh"
-#include <iostream>
-#include <string>
-#include <vector>
-#include <tree_sitter/api.h>
-
-// 必须包裹在 extern "C" 中，因为这些函数是 C 语言实现的
-extern "C" {
-    TSLanguage *tree_sitter_python();
-}
+#include "analyzer.hh"
 
 int main(int argc, char** argv) {
     pto_parser::AppOptions options;
@@ -30,6 +22,9 @@ int main(int argc, char** argv) {
         SPDLOG_DEBUG("Debug mode is ON. Detailed AST info will be logged to file.");
     }
 
+    // 解析输入文件
+    pto_parser::PTOAnalyzer analyzer(options);
+    analyzer.run();
 
     return 0;
 }

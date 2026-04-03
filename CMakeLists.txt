@@ -19,13 +19,14 @@ include_directories(
 file(GLOB_RECURSE PROJECT_SOURCES
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
 )
 
 # 4. 补充三方库中必须手动指定的非 src 文件 (如 tree-sitter 核心)
 set(ALL_SOURCES
     ${PROJECT_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter/lib/src/lib.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-python/src/parser.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-python/src/scanner.c
 )
 
 add_executable(pto_parser ${ALL_SOURCES})
@@ -53,7 +54,11 @@ target_compile_options(pto_parser PRIVATE
 # 8. 打印当前构建类型，方便确认
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-set_source_files_properties(src/parser.c src/scanner.c PROPERTIES COMPILE_FLAGS "-w")
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-python/src/parser.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-python/src/scanner.c 
+    PROPERTIES COMPILE_FLAGS "-w"
+)
 
 
 
