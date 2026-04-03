@@ -1,3 +1,9 @@
 [submodule "third_party/tree-sitter"]
 	path = third_party/tree-sitter
 	url = git@github.com:tree-sitter/tree-sitter.git
+[submodule "third_party/spdlog"]
+	path = third_party/spdlog
+	url = git@github.com:gabime/spdlog.git
+[submodule "third_party/CLI11"]
+	path = third_party/CLI11
+	url = git@github.com:CLIUtils/CLI11.git
