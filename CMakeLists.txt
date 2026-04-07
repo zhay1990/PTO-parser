@@ -6,6 +6,7 @@ set(CMAKE_C_STANDARD 99)
 
 # 1. 引入子工程
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/spdlog)
+add_definitions(-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/CLI11)
 
 # 2. 包含路径

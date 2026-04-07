@@ -1,6 +1,8 @@
 #include "options.hh"
 #include "logger.hh"
-#include "analyzer.hh"
+#include "parser.hh"
+#include "ast_process.hh"
+
 
 int main(int argc, char** argv) {
     pto_parser::AppOptions options;
@@ -13,18 +15,18 @@ int main(int argc, char** argv) {
 
     pto_parser::setup_logger(options.output_dir, options.debug);
 
-    
     SPDLOG_INFO("PTO-parser started successfully.");
     SPDLOG_INFO("Input file: {}", options.input_file);
     SPDLOG_INFO("Output directory: {}", options.output_dir);
 
-    if (options.debug) {
-        SPDLOG_DEBUG("Debug mode is ON. Detailed AST info will be logged to file.");
+    // 解析输入的python文件，转化成MODULE结构
+    struct MODULE_NODE *module = parse_input_file(options.input_file, options.debug);
+    if (module == nullptr) {
+        return 1;
     }
 
-    // 解析输入文件
-    pto_parser::PTOAnalyzer analyzer(options);
-    analyzer.run();
+    // Clean up
+    ast_module_delete(module);
 
     return 0;
 }
