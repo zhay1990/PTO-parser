@@ -1,10 +1,11 @@
 #include "parser.hh"
 #include "logger.hh"
-#include "ast_process.hh"
 #include <fstream>
 #include <tree_sitter/api.h>
 #include <string.h>
+#include <string>
 
+// 辅助函数
 static const std::string get_node_text(TSNode node, const std::string& buffer) {
     if (ts_node_is_null(node)) return "";
 
@@ -19,35 +20,38 @@ static inline bool check_node_type(TSNode node, const std::string& name) {
     return strcmp(ts_node_type(node), name.c_str()) == 0;
 }
 
-static inline const std::string get_attribute_str(TSNode node, const std::string& buffer, const std::unordered_map<std::string, std::string>& importMap) {
-    if (ts_node_is_null(node)) return "";
-
+static inline const std::string get_attribute_str(TSNode node, const std::string& buffer) {
     if (!check_node_type(node, "attribute")) {
-        SPDLOG_ERROR("get_attribute_str only used for attribute node, but got {} node", ts_node_type(node));
+        SPDLOG_ERROR("get_attribute_str only used for attribute node");
         return "";
     }
 
     std::string ret;
 
     if (check_node_type(ts_node_named_child(node, 0), "attribute")) {
-        ret = get_attribute_str(ts_node_named_child(node, 0), buffer, importMap);
+        ret = get_attribute_str(ts_node_named_child(node, 0), buffer);
     }
     else if (check_node_type(ts_node_named_child(node, 0), "identifier")) {
         ret = get_node_text(ts_node_named_child(node, 0), buffer);
-        if (importMap.find(ret) != importMap.end()) {
-           ret = importMap.find(ret)->second;
-        }
     }
     else {
         SPDLOG_ERROR("Unexpected node type {}", ts_node_type(node));
         return "";
     }
 
-    for (uint32_t i = 1; i < ts_node_named_child_count(node); i ++) {
+    for (uint32_t i = 1; i < ts_node_named_child_count(node); ++i) {
         ret += "." + get_node_text(ts_node_named_child(node, i), buffer);
     }
 
     return ret;
+}
+
+static inline const std::string replace_import_alias(const std::string& in, const pto_parser::STR_STR_MAP& importMap) {
+    size_t index = in.find_first_of('.');
+    if (index == std::string::npos) return in;
+    std::string temp = in.substr(0, index);
+    if (importMap.find(temp) == importMap.end()) return in;
+    return importMap.find(temp)->second + in.substr(index);
 }
 
 extern "C" const TSLanguage* tree_sitter_python();
@@ -76,80 +80,150 @@ static void dump_tree_for_debug(TSNode node, const std::string& source, const in
     }
 }
 
-static void gen_func_call(struct FUNCTION_CALL& callNode, TSNode node, const std::string& buffer, const std::unordered_map<std::string, std::string>& importMap) {
-    if (!check_node_type(node, "call")) {
-        SPDLOG_ERROR("gen_func_call only process call node");
+static void handle_import(TSNode node, const std::string& buffer, pto_parser::STR_STR_MAP& importAlias) {
+    // 分情况处理
+    // 1. import xxx.xx as xx
+    // 这种模式下node只有一个aliased_import节点
+    if (ts_node_named_child_count(node) == 1 && check_node_type(ts_node_named_child(node, 0), "aliased_import")) {
+        TSNode child = ts_node_named_child(node, 0);
+        if (ts_node_named_child_count(child) != 2) {
+            SPDLOG_ERROR("Unexpected error for aliased import");
+            return;
+        }
+
+        std::string alias = get_node_text(ts_node_named_child(child, 1), buffer);
+        std::string original = get_node_text(ts_node_named_child(child, 0), buffer);
+
+        if (importAlias.find(alias) != importAlias.end()) {
+            SPDLOG_WARN("Duplicated alias '{}' for '{}' and '{}'", alias, original, importAlias[alias]);
+        }
+
+        importAlias[alias] = original;
+        SPDLOG_DEBUG("Got alias import name '{}' for '{}'", alias, original);
+        
         return;
     }
 
-    // 第一个节点应当是identifier或attribute
-    if (check_node_type(ts_node_named_child(node, 0), "identifier")) {
-        callNode.funcName = get_node_text(ts_node_named_child(node, 0), buffer);
-    } 
-    else if (check_node_type(ts_node_named_child(node, 0), "attribute")) {
-        // 函数调用名在attribute中，第一个identifier可能需要用import table调整
-        callNode.funcName = get_attribute_str(ts_node_named_child(node, 0), buffer, importMap);
-    }
-    else {
-        SPDLOG_ERROR("Process method for '{}' at line {} is not implemented",
-            get_node_text(node, buffer), ts_node_start_point(node).row + 1
-        );
+    // 其他模式待补充
+    SPDLOG_ERROR("Process method for statement '{}' at line {} is not implemented.", get_node_text(node, buffer), ts_node_start_point(node).row + 1);
+}
+
+static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
+    if (!check_node_type(node, "call")) {
+        SPDLOG_ERROR("create_call_node only used for call node");
+        return nullptr;
     }
 
-    // 处理argument list
+    // 应当有两个命名节点
+    if (ts_node_named_child_count(node) != 2) {
+        SPDLOG_ERROR("Unexpected error");
+        return nullptr;
+    }
+
+    // 第一个节点是funcName
+    std::string funcName = get_node_text(ts_node_named_child(node, 0), buffer);
+    funcName = replace_import_alias(funcName, importAlias);
+
+    // 第二个节点是argument list
+    if (!check_node_type(ts_node_named_child(node, 1), "argument_list")) {
+        SPDLOG_ERROR("Unexpected error");
+        return nullptr;
+    }
+
     TSNode argumentList = ts_node_named_child(node, 1);
-    for (uint32_t i = 0; i < ts_node_named_child_count(argumentList); i ++) {
-        // 暂时只处理string类型
+
+    std::vector<pto_parser::PTO_EXPRESSION*> arguments;
+
+    for (uint32_t i = 0; i < ts_node_named_child_count(argumentList); ++i) {
         TSNode param = ts_node_named_child(argumentList, i);
 
         if (check_node_type(param, "string")) {
-            struct CALL_ARGUMENT argument;
-            argument.type = CALL_ARGUMENT_TYPE::VARIABLE;
-            argument.varName = get_node_text(param, buffer);
-            callNode.arguments.emplace_back(argument);
+            pto_parser::PTO_VARIABLE *variable = new pto_parser::PTO_VARIABLE(
+                replace_import_alias(get_node_text(param, buffer), importAlias),
+                ts_node_start_point(param).row + 1,
+                ts_node_start_point(param).column + 1
+            );
+
+            arguments.emplace_back(variable);
         }
         else if (check_node_type(param, "keyword_argument")) {
-            struct CALL_ARGUMENT argument;
-            argument.type = CALL_ARGUMENT_TYPE::KEYWORD;
-            
             TSNode var = ts_node_named_child(param, 0);
             TSNode val = ts_node_named_child(param, 1);
 
-            if (check_node_type(var, "identifier")) {
-                argument.varName = get_node_text(var, buffer);
+            pto_parser::PTO_KEYWORD *variable = new pto_parser::PTO_KEYWORD(
+                get_node_text(var, buffer),
+                ts_node_start_point(var).row + 1,
+                ts_node_start_point(var).column + 1
+            );
+
+            if (check_node_type(val, "identifier") || check_node_type(val, "attribute")) {
+                variable->set_value(new pto_parser::PTO_VARIABLE(
+                    replace_import_alias(get_node_text(val, buffer), importAlias),
+                    ts_node_start_point(val).row + 1,
+                    ts_node_start_point(val).column + 1
+                ));
             }
-            else if (check_node_type(var, "attribute")) {
-                argument.varName = get_attribute_str(var, buffer, importMap);
-            } else {
+            else {
                 SPDLOG_ERROR("Process method for '{}' at line {} is not implemented",
                     get_node_text(node, buffer), ts_node_start_point(node).row + 1
                 );
             }
 
-            if (check_node_type(val, "identifier")) {
-                argument.value = get_node_text(val, buffer);
-            }
-            else if (check_node_type(val, "attribute")) {
-                argument.value = get_attribute_str(val, buffer, importMap);
-            } else {
-                SPDLOG_ERROR("Process method for '{}' at line {} is not implemented",
-                    get_node_text(node, buffer), ts_node_start_point(node).row + 1
-                );
-            }
-
-            callNode.arguments.emplace_back(argument);
+            arguments.emplace_back(variable);
         }
+
         else {
             SPDLOG_ERROR("Process method for function call '{}' at line {} is not implemented.",
                 get_node_text(node, buffer),
                 ts_node_start_point(node).row + 1  
             );
-            return;
         }
     }
+
+    pto_parser::PTO_CALL *ret = new pto_parser::PTO_CALL(
+        funcName,
+        ts_node_start_point(node).row + 1,
+        ts_node_start_point(node).column + 1
+    );
+
+    ret->add_arguments(arguments);
+
+    return ret;
 }
 
-static const std::string get_decorate_string(TSNode node, const std::string& buffer, const std::unordered_map<std::string, std::string>& importMap) {
+static pto_parser::PTO_ASSIGNMENT* create_assignment(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
+    if (!check_node_type(node, "expression_statement")) {
+        SPDLOG_ERROR("create_assignment only used for expression_statement node");
+        return nullptr;
+    }
+
+    // 处理只有一个assignment节点的情况
+    if (ts_node_named_child_count(node) == 1 && check_node_type(ts_node_named_child(node, 0), "assignment")) {
+        TSNode assign = ts_node_named_child(node, 0);
+
+        // 处理有两个命名节点，且第二个节点是call的情况
+        if (ts_node_named_child_count(assign) == 2 && check_node_type(ts_node_named_child(assign, 1), "call")) {
+            std::string varName = get_node_text(ts_node_named_child(assign, 0), buffer);
+
+            pto_parser::PTO_CALL *callNode = create_call_node(ts_node_named_child(assign, 1), buffer, importAlias);
+            
+            pto_parser::PTO_ASSIGNMENT* ret = new pto_parser::PTO_ASSIGNMENT(
+                varName,
+                ts_node_start_point(node).row + 1,
+                ts_node_start_point(node).column + 1
+            );
+
+            ret->set_value(callNode);
+
+            return ret;
+        }
+
+    }
+
+    return nullptr;
+}
+
+static const std::string get_decorate_string(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
     if (!check_node_type(node, "decorator")) {
         SPDLOG_ERROR("get_decorate_string only process decorate node");
         return "";
@@ -159,40 +233,17 @@ static const std::string get_decorate_string(TSNode node, const std::string& buf
 
     // 现在看到了三种情况
     if (ts_node_named_child_count(node) == 1) {
-        if (strcmp(ts_node_type(ts_node_named_child(node, 0)), "attribute") == 0) {
-            TSNode attribute = ts_node_named_child(node, 0);
-            // xx.xx形式，可能需要替换alias
-            decorate = get_node_text(ts_node_named_child(attribute, 0), buffer);
-            
-            if (importMap.find(decorate) != importMap.end()) {
-                decorate = importMap.find(decorate)->second;
-            }
-
-            for (uint32_t i = 1; i < ts_node_named_child_count(attribute); i ++) {
-                decorate += "." + get_node_text(ts_node_named_child(attribute, i), buffer);
-            }
+        if (check_node_type(ts_node_named_child(node, 0), "attribute")) {
+            decorate = get_attribute_str(ts_node_named_child(node, 0), buffer);
+            decorate = replace_import_alias(decorate, importAlias);
         }
-        else if (strcmp(ts_node_type(ts_node_named_child(node, 0)), "identifier") == 0) {
+        else if (check_node_type(ts_node_named_child(node, 0), "identifier")) {
             decorate = get_node_text(ts_node_named_child(node, 0), buffer);
         }
-        else if (strcmp(ts_node_type(ts_node_named_child(node, 0)), "call") == 0) {
-            struct FUNCTION_CALL tempNode;
-            gen_func_call(tempNode, ts_node_named_child(node, 0), buffer, importMap);
-            
-            // 转成string返回
-            decorate = tempNode.funcName + "(";
-
-            for (std::size_t i = 0; i < tempNode.arguments.size(); i ++) {
-                decorate += tempNode.arguments[i].varName;
-
-                switch (tempNode.arguments[i].type) {
-                    case CALL_ARGUMENT_TYPE::VARIABLE: break;
-                    case CALL_ARGUMENT_TYPE::KEYWORD: decorate += "=" + tempNode.arguments[i].value; break;
-                    default: SPDLOG_ERROR("Error!");
-                }
-                decorate += ",";
-            }
-            decorate.back() = ')';
+        else if (check_node_type(ts_node_named_child(node, 0), "call")) {
+            auto ptr = create_call_node(ts_node_named_child(node, 0), buffer, importAlias);
+            decorate = ptr->to_string();
+            delete ptr;
         }
         else {
             SPDLOG_ERROR("Process method for '{}' at line {} is not implemented",
@@ -203,97 +254,199 @@ static const std::string get_decorate_string(TSNode node, const std::string& buf
 
     return decorate;
 }
-                
 
-static bool process_aliased_import(TSNode node, std::unordered_map<std::string, std::string>& importMap, const std::string& buffer) {
-    // 应当只有一个匿名节点，即aliased_import
-    if (ts_node_is_null(node)) {
-        SPDLOG_ERROR("Unexpected nullptr");
-        return false;
+static pto_parser::PTO_FUNC* create_func_node(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
+    if (!check_node_type(node, "function_definition")) {
+        SPDLOG_ERROR("create_func_node can only used for function_definition node");
+        return nullptr;
     }
 
-    if (ts_node_named_child_count(node) != 1) return false;
-
-    TSNode child = ts_node_named_child(node, 0);
-    if (strcmp(ts_node_type(child), "aliased_import") != 0) return false;
-
-    // 这个节点有两个命名节点
-    if (ts_node_named_child_count(child) != 2) {
-        SPDLOG_ERROR("Unexpected error for aliased import");
-        // 算处理过了
-        return true;
+    // 第一个节点应当是identifier
+    if (!check_node_type(ts_node_named_child(node, 0), "identifier")) {
+        SPDLOG_ERROR("Unexpected error");
+        return nullptr;
     }
 
-    std::string aliasName = get_node_text(ts_node_named_child(child, 1), buffer);
-    std::string originalName = get_node_text(ts_node_named_child(child, 0), buffer);
+    pto_parser::PTO_FUNC *ret = new pto_parser::PTO_FUNC(
+        get_node_text(ts_node_named_child(node, 0), buffer),
+        ts_node_start_point(node).row + 1,
+        ts_node_start_point(node).column
+    );
 
-    SPDLOG_DEBUG("Got alias import name '{}' for '{}'", aliasName, originalName);
-
-    if (importMap.find(aliasName) != importMap.end()) {
-        SPDLOG_ERROR("Duplicated alias name '{}' for '{}' and '{}' at line {}",
-            aliasName, originalName, importMap[aliasName],
-            ts_node_start_point(node).row + 1
-        );
-        // 如果有重名的话，用最新的覆盖旧的
+    // 第二个节点是parameters
+    if (!check_node_type(ts_node_named_child(node, 1), "parameters")) {
+        SPDLOG_ERROR("Unexpected error");
+        return nullptr;
     }
 
-    importMap[aliasName] = originalName;
+    std::vector<pto_parser::PTO_VARIABLE*> arguments;
 
-    return true;
-}
+    for (uint32_t i = 0; i < ts_node_named_child_count(ts_node_named_child(node, 1)); ++i) {
+        TSNode param = ts_node_named_child(ts_node_named_child(node, 1), i);
 
-static void handle_import(TSNode node, std::unordered_map<std::string, std::string>& importMap, const std::string& buffer) {
-    // 分情况处理
-    // 1. import xxx.xx as xx
-    // 这种模式下 node有两个子节点，一个import 一个aliased_import
-    if (process_aliased_import(node, importMap, buffer)) return;
+        // 看到两种情况
+        if (check_node_type(param, "identifier")) {
+            arguments.emplace_back(new pto_parser::PTO_VARIABLE(
+                get_node_text(param, buffer),
+                ts_node_start_point(param).row + 1,
+                ts_node_start_point(param).column
+            ));
+        }
+        else if (check_node_type(param, "typed_parameter")) {
+            arguments.emplace_back(new pto_parser::PTO_VARIABLE(
+                get_node_text(ts_node_named_child(param, 0), buffer),
+                ts_node_start_point(ts_node_named_child(param, 0)).row + 1,
+                ts_node_start_point(ts_node_named_child(param, 0)).column
+            ));
 
-    // 其他模式待补充
-    SPDLOG_ERROR("Process method for statement '{}' at line {} is not implemented.", get_node_text(node, buffer), ts_node_start_point(node).row + 1);
-}
-
-static void add_global_variable(TSNode node, std::unordered_map<std::string, struct VARIABLE_NODE*>& globalVariable, const std::string& buffer, const std::unordered_map<std::string, std::string>& globalImportMap) {
-    // 应当有一个assignment节点
-    if (ts_node_is_null(node)) {
-        SPDLOG_ERROR("Unpexected nullptr");
-        return;
-    }
-    if (ts_node_named_child_count(node) == 1 && strcmp(ts_node_type(ts_node_named_child(node, 0)), "assignment") == 0) {
-        TSNode assign = ts_node_named_child(node, 0);
-
-        // 处理有两个name节点，且第二个节点是call的statement
-        if (ts_node_named_child_count(assign) == 2 && strcmp(ts_node_type(ts_node_named_child(assign, 1)), "call") == 0) {
-            // 创建一个全局变量
-            struct VARIABLE_NODE *globalVar = new struct VARIABLE_NODE();
-            
-            std::string varName = get_node_text(ts_node_named_child(assign, 0), buffer);
-
-            globalVar->name = varName;
-            // 函数调用的默认类型为INT，之后再检查函数返回类型
-            globalVar->type = VARIABLE_TYPE::INT32;
-            
-            TSNode call = ts_node_named_child(assign, 1);
-            
-            gen_func_call(globalVar->call, call, buffer, globalImportMap);
-
-            if (globalVariable.find(varName) != globalVariable.end()) {
-                SPDLOG_ERROR("Duplicated variable definition of '{}' at line '{}'",
-                    varName, ts_node_start_point(node).row + 1
-                );
-                delete globalVar;
-            } else {
-                globalVariable[varName] = globalVar;
+            // 解析类型
+            TSNode type = ts_node_named_child(ts_node_named_child(param, 1), 0);
+            if (!check_node_type(type, "subscript")) {
+                SPDLOG_ERROR("Unexpected ERROR");
+                continue;
             }
 
-            return;
+            std::string typeStr;
+            for (uint32_t j = 0; j < ts_node_child_count(type); ++j) {
+                if (check_node_type(ts_node_child(type, j), "attribute")) {
+                    std::string temp = get_node_text(ts_node_child(type, j), buffer);
+                    typeStr += replace_import_alias(temp, importAlias);
+                } else {
+                    typeStr += get_node_text(ts_node_child(type, j), buffer);
+                }
+            }
+
+            // 将string存入节点 后续解析是什么类型
+            arguments.back()->add_type_str(typeStr);
+        }
+        else {
+            SPDLOG_ERROR("Process method for '{}' at line {} is not implemented",
+                get_node_text(param, buffer),
+                ts_node_start_point(param).row + 1
+            );
         }
     }
 
-    SPDLOG_ERROR("Process method for statement '{}' at line {} is not implemented.", get_node_text(node, buffer), ts_node_start_point(node).row + 1);
+    ret->add_arguments(arguments);
 
+    // 第三节点可能是type, 表示函数的返回值
+    if (check_node_type(ts_node_named_child(node, 2), "type")) {
+        TSNode type = ts_node_named_child(node, 2);
+        // 当前只支持单Variable和tuple类型的返回值
+        std::vector<std::string> returnTypes;
+        if (ts_node_named_child_count(type) == 1 && 
+            check_node_type(ts_node_named_child(type, 0), "generic_type") && 
+            get_node_text(ts_node_named_child(ts_node_named_child(type, 0), 0), buffer) == "tuple") {
+            
+            TSNode params = ts_node_named_child(ts_node_named_child(type, 0), 1);
+            
+            for (uint32_t i = 0; i < ts_node_named_child_count(params); ++i) {
+                if (!check_node_type(ts_node_named_child(params, i), "type")) {
+                    SPDLOG_ERROR("Unexpected Error");
+                    continue;
+                }
+
+                // 解析类型
+                TSNode type2 = ts_node_named_child(ts_node_named_child(params, i), 0);
+                if (!check_node_type(type2, "subscript")) {
+                    SPDLOG_ERROR("Unexpected ERROR");
+                    continue;
+                }
+
+                std::string typeStr;
+                for (uint32_t j = 0; j < ts_node_child_count(type2); ++j) {
+                    if (check_node_type(ts_node_child(type2, j), "attribute")) {
+                        std::string temp = get_node_text(ts_node_child(type2, j), buffer);
+                        typeStr += replace_import_alias(temp, importAlias);
+                    } else {
+                        typeStr += get_node_text(ts_node_child(type2, j), buffer);
+                    }
+                }
+
+                returnTypes.emplace_back(typeStr);
+            }
+        }
+        else if (ts_node_named_child_count(type) == 1 && check_node_type(ts_node_named_child(type, 0), "subscript")) {
+            // 解析类型
+            TSNode type2 = ts_node_named_child(type, 0);
+
+            std::string typeStr;
+            for (uint32_t j = 0; j < ts_node_child_count(type2); ++j) {
+                if (check_node_type(ts_node_child(type2, j), "attribute")) {
+                    std::string temp = get_node_text(ts_node_child(type2, j), buffer);
+                    typeStr += replace_import_alias(temp, importAlias);
+                } else {
+                    typeStr += get_node_text(ts_node_child(type2, j), buffer);
+                }
+            }
+
+            returnTypes.emplace_back(typeStr);
+        }
+        else {
+            SPDLOG_ERROR("Process method for '{}' at line {} is not implemented", 
+            get_node_text(type, buffer),
+            ts_node_start_point(type).row + 1
+        );
+        }
+
+        ret->add_return_type_str(returnTypes);
+    }
+
+    // 最后一个child是block
+    TSNode block = ts_node_named_child(node, ts_node_named_child_count(node) - 1);
+    if (!check_node_type(block, "block")) {
+        SPDLOG_ERROR("Unexpected Error");
+    }
+
+    return ret;
 }
 
-struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug) {
+static pto_parser::PTO_CLASS* create_class_node(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
+    if (!check_node_type(node, "class_definition")) {
+        SPDLOG_ERROR("create_class_node can only used for class_definition node");
+        return nullptr;
+    }
+
+    // 应当只有两个named child
+    if (ts_node_named_child_count(node) != 2 || !check_node_type(ts_node_named_child(node, 0), "identifier") || !(check_node_type(ts_node_named_child(node, 1), "block"))) {
+        SPDLOG_ERROR("Unexpected Error");
+        return nullptr;
+    }
+
+    pto_parser::PTO_CLASS* ret = new pto_parser::PTO_CLASS(
+        get_node_text(ts_node_named_child(node, 1), buffer),
+        ts_node_start_point(node).row + 1,
+        ts_node_start_point(node).column
+    );
+
+    // 遍历BLOCK节点下的所有child节点
+    TSNode block = ts_node_named_child(node, 1);
+    for (uint32_t i = 0; i < ts_node_named_child_count(block); ++i) {
+        TSNode content = ts_node_named_child(block, i);
+
+        if (check_node_type(content, "decorated_definition")) {
+            // 拿到decorator
+            std::string decorator = get_decorate_string(ts_node_named_child(content, 0), buffer, importAlias);
+            
+            TSNode definition = ts_node_named_child(content, 1);
+            if (check_node_type(definition, "function_definition")) {
+                auto ptr = create_func_node(definition, buffer, importAlias);
+                ptr->add_decoration(decorator);
+                ret->add_function_def(ptr);
+            }
+            else {
+                SPDLOG_ERROR("Process method for {} node is not implemented", ts_node_type(definition));
+            }
+        }
+        else {
+            SPDLOG_ERROR("Process method for '{}' is not implemented", get_node_text(content, buffer));
+        }
+    }
+
+    return ret;
+}
+
+pto_parser::PTO_MODULE* parse_input_file(const std::string& file, const bool& debug) {
     // 先构建parser
     TSParser *parser = ts_parser_new();
     if (!ts_parser_set_language(parser, tree_sitter_python())) {
@@ -301,6 +454,7 @@ struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug)
         return nullptr;
     }
 
+    // 将文件内容复制到buffer内
     std::ifstream ifs(file, std::ios::in | std::ios::binary | std::ios::ate);
     if (!ifs.is_open()) {
         SPDLOG_ERROR("Failed to open {}", file);
@@ -318,6 +472,7 @@ struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug)
     }
     ifs.close();
 
+    // 解析文件
     TSTree* tree = ts_parser_parse_string(parser, nullptr, buffer.c_str(), static_cast<uint32_t>(buffer.size()));
     ts_parser_delete(parser);
     if (!tree) {
@@ -329,39 +484,40 @@ struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug)
         dump_tree_for_debug(ts_tree_root_node(tree), buffer, 0);
     }
 
+    // 是否有格式错误
+    if (ts_node_has_error(ts_tree_root_node(tree))) {
+        SPDLOG_ERROR("Syntax error, check debug output.");
+        return nullptr;
+    }
+
     // 转换成MODULE_NODE
-    struct MODULE_NODE *ret = nullptr;
+    pto_parser::PTO_MODULE *ret = new pto_parser::PTO_MODULE();
 
     TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(tree));
-
-    // 这里假定了一个python文件只有一个module
-    if (strcmp(ts_node_type(ts_tree_cursor_current_node(&cursor)), "module") != 0) {
-        SPDLOG_ERROR("The type of root TSnode should be 'module', but got '{}'", ts_node_type(ts_tree_cursor_current_node(&cursor)));
-        return ret;
-    }
 
     // 进入module开始DFS
     ts_tree_cursor_goto_first_child(&cursor);
 
-    // 记录文件中import的别名
-    std::unordered_map<std::string, std::string> globalImportMap;
-    std::unordered_map<std::string, struct VARIABLE_NODE*> globalVariable;
+    // 记录import alias
+    pto_parser::STR_STR_MAP importAlias;
 
     while (true) {
         // 这层循环只处理module的第一层子节点，这些子节点的内部处理需要其他函数
         TSNode node = ts_tree_cursor_current_node(&cursor);
-        const char* type = ts_node_type(node);
 
-        if (strcmp(type, "comment") == 0) {
+        if (check_node_type(node, "comment")) {
             // 忽略comment
         }
-        else if (strcmp(type, "import_statement") == 0) {
-            // 处理import语句
-            handle_import(node, globalImportMap, buffer);
-        } else if (strcmp(type, "expression_statement") == 0) {
+        else if (check_node_type(node, "import_statement")) {
+            // 处理import语句, 将可能的别名存在importAlias内
+            // 简化处理，这里只会处理别名
+            handle_import(node, buffer, importAlias);
+        } else if (check_node_type(node, "expression_statement")) {
             // 全局变量
-            add_global_variable(node, globalVariable, buffer, globalImportMap);
-        } else if (strcmp(type, "decorated_definition") == 0) {
+            pto_parser::PTO_ASSIGNMENT *assignment = create_assignment(node, buffer, importAlias);
+            ret->add_global_variable(assignment);
+            
+        } else if (check_node_type(node, "decorated_definition")) {
             // 函数或类定义
             
             // 会有两个节点，一个是decorator，一个是具体的definition
@@ -369,11 +525,13 @@ struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug)
                 SPDLOG_ERROR("Unexpected error");
             } else {
                 // 拿到decorator
-                std::string decorator = get_decorate_string(ts_node_named_child(node, 0), buffer, globalImportMap);
-                
+                std::string decorator = get_decorate_string(ts_node_named_child(node, 0), buffer, importAlias);
+   
                 TSNode definition = ts_node_named_child(node, 1);
-                if (strcmp(ts_node_type(definition), "class_definition") == 0) {
-
+                if (check_node_type(definition, "class_definition")) {
+                    auto ptr = create_class_node(definition, buffer, importAlias);
+                    ptr->add_decoration(decorator);
+                    ret->add_class(ptr);
                 }
                 else {
                     SPDLOG_ERROR("Process method for {} node is not implemented", ts_node_type(definition));
@@ -382,9 +540,9 @@ struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug)
             }
         } else {
             // 未知类型，需补充处理函数
-            SPDLOG_ERROR("Unexpected node type '{}'", type);
+            SPDLOG_ERROR("Unexpected node type '{}'", ts_node_type(node));
             ts_tree_cursor_delete(&cursor);
-            ast_module_delete(ret);
+            delete ret;
             return nullptr;
         }
         
@@ -393,21 +551,8 @@ struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug)
             break;
     }
 
+
     ts_tree_cursor_delete(&cursor);
     ts_tree_delete(tree);
     return ret;
-}
-
-void FUNCTION_CALL::dump() {
-    SPDLOG_INFO("FuncName = {}", funcName);
-    for (std::size_t i = 0; i < arguments.size(); i ++) {
-        switch (arguments[i].type) {
-            case CALL_ARGUMENT_TYPE::VARIABLE:
-                SPDLOG_INFO("Argument #{}: {}", i, arguments[i].varName);
-                break;
-            case CALL_ARGUMENT_TYPE::KEYWORD:
-                SPDLOG_INFO("Argument #{}: {} = {}", i, arguments[i].varName, arguments[i].value);
-                break;
-        }
-    }
 }

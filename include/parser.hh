@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ast_node.hh"
+#include "ptoNode.hh"
 #include <string>
 
-struct MODULE_NODE* parse_input_file(const std::string& file, const bool& debug);
+pto_parser::PTO_MODULE* parse_input_file(const std::string& file, const bool& debug);

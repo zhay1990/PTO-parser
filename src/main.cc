@@ -1,7 +1,6 @@
 #include "options.hh"
 #include "logger.hh"
 #include "parser.hh"
-#include "ast_process.hh"
 
 
 int main(int argc, char** argv) {
@@ -20,13 +19,13 @@ int main(int argc, char** argv) {
     SPDLOG_INFO("Output directory: {}", options.output_dir);
 
     // 解析输入的python文件，转化成MODULE结构
-    struct MODULE_NODE *module = parse_input_file(options.input_file, options.debug);
+    pto_parser::PTO_MODULE *module = parse_input_file(options.input_file, options.debug);
     if (module == nullptr) {
         return 1;
     }
 
     // Clean up
-    ast_module_delete(module);
+    delete module;
 
     return 0;
 }
