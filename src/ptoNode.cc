@@ -1,5 +1,6 @@
 #include "ptoNode.hh"
 #include "logger.hh"
+#include <sstream>
 
 namespace pto_parser {
 
@@ -15,17 +16,55 @@ PTO_VARIABLE::PTO_VARIABLE(const std::string& name, const uint32_t& row, const u
       varType(""),
       dataType(""),
       dimension(),
-      typeStr("")
+      typeStr()
 {}
 
-PTO_VARIABLE::~PTO_VARIABLE() {}
-
 void PTO_VARIABLE::dump(int depth) const {
-    SPDLOG_INFO("{}{} {}", std::string(depth * 2, ' '), varName, typeStr);
+    SPDLOG_INFO("{}{}", std::string(depth * 2, ' '), varName);
+    for (const auto& t : typeStr) {
+        SPDLOG_INFO("{}type = {}", std::string(depth * 2, ' '), t);
+    }
 }
 
 const std::string PTO_VARIABLE::to_string() const {
     return varName;
+}
+
+PTO_FLOAT::PTO_FLOAT(const float& v, const uint32_t& row, const uint32_t& col)
+    : PTO_EXPRESSION(row, col),
+      value(v)
+{}
+
+void PTO_FLOAT::dump(int depth) const {
+    SPDLOG_INFO("{}float value = {}", std::string(depth * 2, ' '), value);
+}
+
+const std::string PTO_FLOAT::to_string() const {
+    std::stringstream ss;
+    ss << value;
+    return ss.str();
+}
+
+PTO_INDEXED_VAR::PTO_INDEXED_VAR(const std::string& n, const int& i, const uint32_t& row, const uint32_t& col)
+    : PTO_EXPRESSION(row, col),
+      varName(n),
+      index(std::vector<int>(1, i))
+{}
+
+void PTO_INDEXED_VAR::dump(int depth) const {
+    if (index.size() != 1) {
+        SPDLOG_ERROR("Unexpected index dimension for PTO_INDEXED_VAR");
+    }
+    SPDLOG_INFO("{}{}[{}]", std::string(depth * 2, ' '), varName, index[0]);
+}
+
+const std::string PTO_INDEXED_VAR::to_string() const {
+    if (index.size() != 1) {
+        SPDLOG_ERROR("Unexpected index dimension for PTO_INDEXED_VAR");
+    }
+    std::stringstream ss;
+    ss << varName << "[" << index[0] << "]";
+    return ss.str();
 }
 
 PTO_CALL::PTO_CALL(const std::string& name, const uint32_t& row, const uint32_t& col)
@@ -94,22 +133,25 @@ PTO_BASE::PTO_BASE(const uint32_t& r, const uint32_t& c)
 {}
 
 
-PTO_ASSIGNMENT::PTO_ASSIGNMENT(const std::string& name, const uint32_t& r, const uint32_t& c)
+PTO_ASSIGNMENT::PTO_ASSIGNMENT(PTO_VARIABLE *l, const uint32_t& r, const uint32_t& c)
     : PTO_BASE(r, c),
-      lhs(name),
+      lhs(l),
       value(nullptr)
 {}
 
 PTO_ASSIGNMENT::~PTO_ASSIGNMENT() {
+    if (lhs != nullptr)
+        delete lhs;
     if (value != nullptr)
         delete value;
 }
 
 void PTO_ASSIGNMENT::dump(int depth) const {
     SPDLOG_INFO("{}ASSIGNMENT:", std::string(depth * 2, ' '));
-    SPDLOG_INFO("{}lhs = {}", std::string(depth * 2 + 2, ' '), lhs);
+    SPDLOG_INFO("{}lhs is:", std::string(depth * 2 + 2, ' '));
+    lhs->dump(depth + 1);
     SPDLOG_INFO("{}rhs is:", std::string(depth * 2 + 2, ' '));
-    value->dump(depth + 2);
+    value->dump(depth + 1);
 }
 
 PTO_FUNC::PTO_FUNC(const std::string& n, const uint32_t& r, const uint32_t& c)
@@ -117,11 +159,17 @@ PTO_FUNC::PTO_FUNC(const std::string& n, const uint32_t& r, const uint32_t& c)
       funcName(n),
       decorate(),
       arguments(),
-      returnTypeStr()
+      returnTypeStr(),
+      statements()
 {}
 
 PTO_FUNC::~PTO_FUNC() {
-
+    for (std::size_t i = 0; i < arguments.size(); i ++) {
+        delete arguments[i];
+    }
+    for (std::size_t i = 0; i < statements.size(); i ++) {
+        delete statements[i];
+    }
 }
 
 void PTO_FUNC::dump(int depth) const {
@@ -138,6 +186,9 @@ void PTO_FUNC::dump(int depth) const {
         for (const auto& str: returnTypeStr) {
             SPDLOG_INFO("{}  {}", std::string(depth * 2, ' '), str);
         }
+    }
+    for (const auto& ptr : statements) {
+        ptr->dump(depth + 1);
     }
 }
 
@@ -178,7 +229,7 @@ PTO_MODULE::~PTO_MODULE() {
 
 
 void PTO_MODULE::add_global_variable(PTO_ASSIGNMENT *assign) {
-    globalVariable[assign->get_lhs()] = assign;
+    globalVariable[assign->get_lhs()->to_string()] = assign;
 }
 
 void PTO_MODULE::add_class(PTO_CLASS *c) {

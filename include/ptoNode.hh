@@ -11,10 +11,9 @@ typedef std::unordered_map<std::string, std::string> STR_STR_MAP;
 enum class PTO_EXPRESSION_TYPE{
     VARIABLE,
     TYPED_VARIABLE,
-    CONSTANT,
+    INDEXED_VARIABLE,
+    FLOAT_CONSTANT,
     CALL,
-    BINARY_OP,
-    UNARY_OP,
     KEYWORD
 };
 
@@ -37,16 +36,16 @@ protected:
 class PTO_VARIABLE : public PTO_EXPRESSION {
 public:
     explicit PTO_VARIABLE(const std::string& varName, const uint32_t& row, const uint32_t& col);
-    ~PTO_VARIABLE();
+    ~PTO_VARIABLE() = default;
 
     PTO_EXPRESSION_TYPE type() const {
-        if (varType == "") return PTO_EXPRESSION_TYPE::VARIABLE;
-        else              return PTO_EXPRESSION_TYPE::TYPED_VARIABLE;
+        if (varType.size() == 0) return PTO_EXPRESSION_TYPE::VARIABLE;
+        else                     return PTO_EXPRESSION_TYPE::TYPED_VARIABLE;
     }
     void dump(int depth) const;
     const std::string to_string() const;
 
-    void add_type_str(const std::string& str) {typeStr = str;}
+    void add_type_str(const std::string& str) {typeStr.emplace_back(str);}
 private:
     std::string varName;
     
@@ -58,8 +57,36 @@ private:
     // 仅当类型是TENSOR时才生效的参数
     std::vector<int> dimension;
 
-    // 解析时临时存储
-    std::string typeStr;
+    // 解析时临时存储，多个typeStr表明该变量是tuple
+    std::vector<std::string> typeStr;
+};
+
+class PTO_FLOAT : public PTO_EXPRESSION {
+public:
+    explicit PTO_FLOAT(const float& value, const uint32_t& row, const uint32_t& col);
+    ~PTO_FLOAT() = default;
+    
+    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::FLOAT_CONSTANT;}
+    void dump(int depth) const;
+    const std::string to_string() const;
+
+private:
+    float value;
+};
+
+class PTO_INDEXED_VAR : public PTO_EXPRESSION {
+public:
+    explicit PTO_INDEXED_VAR(const std::string& varName, const int& index, const uint32_t& row, const uint32_t& col);
+    ~PTO_INDEXED_VAR() = default;
+
+    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::INDEXED_VARIABLE;}
+    void dump(int depth) const;
+    const std::string to_string() const;
+
+private:
+    std::string varName;
+    // 这里给了拓展到多维的机会，但当前只处理tuple类型所以只有一个index
+    std::vector<int> index;
 };
 
 class PTO_CALL : public PTO_EXPRESSION {
@@ -73,6 +100,9 @@ public:
 
     
     void add_arguments(const std::vector<PTO_EXPRESSION*>& args) {arguments = args;}
+
+    const std::string& get_func_name() const {return funcName;}
+    const std::vector<PTO_EXPRESSION*>& get_arguments() const {return arguments;}
 private:
     std::string funcName;
     std::vector<PTO_EXPRESSION*> arguments;
@@ -123,7 +153,7 @@ protected:
 
 class PTO_ASSIGNMENT : public PTO_BASE {
 public:
-    explicit PTO_ASSIGNMENT(const std::string& name, const uint32_t& row, const uint32_t& col);
+    explicit PTO_ASSIGNMENT(PTO_VARIABLE* lhs, const uint32_t& row, const uint32_t& col);
     ~PTO_ASSIGNMENT();
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::ASSIGNMENT;}
@@ -131,10 +161,10 @@ public:
 
     void set_value(PTO_EXPRESSION* v) {value = v;}
 
-    const std::string& get_lhs() const {return lhs;}
+    PTO_VARIABLE* get_lhs() const {return lhs;}
 
 private:
-    std::string lhs;
+    PTO_VARIABLE *lhs;
     PTO_EXPRESSION *value; // 可以是string，int，function call等等
 };
 
@@ -149,11 +179,14 @@ public:
     void add_decoration(const std::string& d) {decorate = d;}
     void add_arguments(const std::vector<PTO_VARIABLE*>& arg) {arguments = arg;}
     void add_return_type_str(const std::vector<std::string>& str) {returnTypeStr = str;}
+    void add_statement(PTO_BASE* statement) {statements.emplace_back(statement);}
+
 private:
     std::string funcName;
     std::string decorate;
     std::vector<PTO_VARIABLE*> arguments;
     std::vector<std::string> returnTypeStr;
+    std::vector<PTO_BASE*> statements;
 };
 
 class PTO_CLASS : public PTO_BASE{

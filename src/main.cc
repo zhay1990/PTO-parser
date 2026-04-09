@@ -26,6 +26,6 @@ int main(int argc, char** argv) {
 
     // Clean up
     delete module;
-
+    SPDLOG_INFO("Clean up succeffully. Exited.");
     return 0;
 }
