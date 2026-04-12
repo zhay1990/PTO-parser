@@ -30,6 +30,26 @@ const std::string PTO_VARIABLE::to_string() const {
     return varName;
 }
 
+PTO_TUPLE_VAR::PTO_TUPLE_VAR(const uint32_t& row, const uint32_t& col)
+    : PTO_EXPRESSION(row, col),
+      varList()
+{}
+
+void PTO_TUPLE_VAR::dump(int depth) const {
+    SPDLOG_INFO("{}Tuple of:", std::string(depth * 2, ' '));
+    for (const auto& str : varList) {
+        SPDLOG_INFO("{}{}", std::string(depth * 2 + 2, ' '), str);
+    }
+}
+
+const std::string PTO_TUPLE_VAR::to_string() const {
+    std::stringstream ss;
+    for (const auto& str : varList) {
+        ss << str << ", ";
+    }
+    return ss.str();
+}
+
 PTO_FLOAT::PTO_FLOAT(const float& v, const uint32_t& row, const uint32_t& col)
     : PTO_EXPRESSION(row, col),
       value(v)
@@ -42,6 +62,66 @@ void PTO_FLOAT::dump(int depth) const {
 const std::string PTO_FLOAT::to_string() const {
     std::stringstream ss;
     ss << value;
+    return ss.str();
+}
+
+PTO_INT::PTO_INT(const int& v, const uint32_t& row, const uint32_t& col)
+    : PTO_EXPRESSION(row, col),
+      value(v)
+{}
+
+void PTO_INT::dump(int depth) const {
+    SPDLOG_INFO("{}int value = {}", std::string(depth * 2, ' '), value);
+}
+
+const std::string PTO_INT::to_string() const {
+    std::stringstream ss;
+    ss << value;
+    return ss.str();
+}
+
+PTO_BOOL::PTO_BOOL(const bool& v, const uint32_t& row, const uint32_t& col)
+    : PTO_EXPRESSION(row, col),
+      value(v)
+{}
+
+void PTO_BOOL::dump(int depth) const {
+    SPDLOG_INFO("{}bool value = {}", std::string(depth * 2, ' '), value);
+}
+
+const std::string PTO_BOOL::to_string() const {
+    if (value) return "true";
+    else return "false";
+}
+
+PTO_BINARY_OP::PTO_BINARY_OP(PTO_OPERATOR o, const uint32_t& row, const uint32_t& col)
+    : PTO_EXPRESSION(row, col),
+      lhs(nullptr),
+      rhs(nullptr),
+      op(o)
+{}
+
+PTO_BINARY_OP::~PTO_BINARY_OP() {
+    if (lhs != nullptr) delete lhs;
+    if (rhs != nullptr) delete rhs;
+}
+
+void PTO_BINARY_OP::dump(int depth) const {
+    SPDLOG_INFO("{}{}", std::string(depth * 2, ' '), this->to_string());
+}
+
+const std::string PTO_BINARY_OP::to_string() const {
+    std::stringstream ss;
+    ss << "(";
+    ss << lhs->to_string();
+    switch (op) {
+        case PTO_OPERATOR::ADD: ss << " + "; break;
+        case PTO_OPERATOR::MUL: ss << " * "; break;
+        case PTO_OPERATOR::FLOOR_DIV: ss << " // "; break;
+        case PTO_OPERATOR::SUB: ss << " - "; break;
+    }
+    ss << rhs->to_string();
+    ss << ")";
     return ss.str();
 }
 
@@ -152,6 +232,59 @@ void PTO_ASSIGNMENT::dump(int depth) const {
     lhs->dump(depth + 1);
     SPDLOG_INFO("{}rhs is:", std::string(depth * 2 + 2, ' '));
     value->dump(depth + 1);
+}
+
+PTO_RETURN::PTO_RETURN(const uint32_t& row, const uint32_t& col)
+    : PTO_BASE(row, col),
+      returnVal()
+{}
+
+PTO_RETURN::~PTO_RETURN() {
+    for (std::size_t i = 0; i < returnVal.size(); i ++) {
+        delete returnVal[i];
+    }
+}
+
+void PTO_RETURN::dump(int depth) const {
+    SPDLOG_INFO("{}Return:", std::string(depth * 2, ' '));
+    for (const auto& ptr : returnVal) {
+        ptr->dump(depth + 1);
+    }
+}
+
+PTO_FOR_LOOP::PTO_FOR_LOOP(const uint32_t& row, const uint32_t& col)
+    : PTO_BASE(row, col),
+      iter(nullptr),
+      initVar(),
+      info(nullptr),
+      statements()
+{}
+
+PTO_FOR_LOOP::~PTO_FOR_LOOP() {
+    if (iter != nullptr)
+        delete iter;
+    for (std::size_t i = 0; i < initVar.size(); i ++) {
+        delete initVar[i];
+    }
+    if (info != nullptr)
+        delete info;
+    for (std::size_t i = 0; i < statements.size(); i ++) {
+        delete statements[i];
+    }
+}
+
+void PTO_FOR_LOOP::dump(int depth) const {
+    SPDLOG_INFO("{}For loop:", std::string(depth * 2, ' '));
+    SPDLOG_INFO("{}Iterator:", std::string(depth * 2 + 2, ' '));
+    iter->dump(depth + 2);
+    SPDLOG_INFO("{}Init Variable", std::string(depth * 2 + 2, ' '));
+    for (const auto& ptr : initVar) {
+        ptr->dump(depth + 2);
+    }
+    info->dump(depth + 1);
+    for (const auto& ptr : statements) {
+        ptr->dump(depth + 1);
+    }
 }
 
 PTO_FUNC::PTO_FUNC(const std::string& n, const uint32_t& r, const uint32_t& c)

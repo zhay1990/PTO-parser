@@ -11,10 +11,14 @@ typedef std::unordered_map<std::string, std::string> STR_STR_MAP;
 enum class PTO_EXPRESSION_TYPE{
     VARIABLE,
     TYPED_VARIABLE,
+    TUPLE_VARIABLE,
     INDEXED_VARIABLE,
     FLOAT_CONSTANT,
+    INT_CONSTANT,
+    BOOL_CONSTANT,
     CALL,
-    KEYWORD
+    KEYWORD,
+    BINARY_OP
 };
 
 class PTO_EXPRESSION{
@@ -61,6 +65,20 @@ private:
     std::vector<std::string> typeStr;
 };
 
+class PTO_TUPLE_VAR : public PTO_EXPRESSION {
+public:
+    explicit PTO_TUPLE_VAR(const uint32_t& row, const uint32_t& col);
+    ~PTO_TUPLE_VAR() = default;
+
+    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::TUPLE_VARIABLE;}
+    void dump(int depth) const;
+    const std::string to_string() const;
+
+    void add_var(const std::string& str) {varList.emplace_back(str);}
+private:
+    std::vector<std::string> varList;
+};
+
 class PTO_FLOAT : public PTO_EXPRESSION {
 public:
     explicit PTO_FLOAT(const float& value, const uint32_t& row, const uint32_t& col);
@@ -72,6 +90,55 @@ public:
 
 private:
     float value;
+};
+
+class PTO_INT : public PTO_EXPRESSION {
+public:
+    explicit PTO_INT(const int& value, const uint32_t& row, const uint32_t& col);
+    ~PTO_INT() = default;
+    
+    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::INT_CONSTANT;}
+    void dump(int depth) const;
+    const std::string to_string() const;
+
+private:
+    int value;
+};
+
+class PTO_BOOL : public PTO_EXPRESSION {
+public:
+    explicit PTO_BOOL(const bool& value, const uint32_t& row, const uint32_t& col);
+    ~PTO_BOOL() = default;
+    
+    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::BOOL_CONSTANT;}
+    void dump(int depth) const;
+    const std::string to_string() const;
+
+private:
+    bool value;
+};
+
+enum class PTO_OPERATOR {
+    ADD,
+    MUL,
+    SUB,
+    FLOOR_DIV
+};
+class PTO_BINARY_OP : public PTO_EXPRESSION {
+public:
+    explicit PTO_BINARY_OP(PTO_OPERATOR op, const uint32_t& row, const uint32_t& col);
+    ~PTO_BINARY_OP();
+
+    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::BINARY_OP;}
+    void dump(int depth) const;
+    const std::string to_string() const;
+
+    void set_lhs (PTO_EXPRESSION *l) {lhs = l;}
+    void set_rhs (PTO_EXPRESSION *r) {rhs = r;}
+
+private:
+    PTO_EXPRESSION *lhs, *rhs;
+    PTO_OPERATOR op;
 };
 
 class PTO_INDEXED_VAR : public PTO_EXPRESSION {
@@ -129,7 +196,9 @@ enum class PTO_NODE_TYPE {
     MODULE,
     CLASS,
     FUNCTION,
-    ASSIGNMENT
+    ASSIGNMENT,
+    RETURN,
+    FOR_LOOP
 };
 
 class PTO_BASE {
@@ -168,6 +237,45 @@ private:
     PTO_EXPRESSION *value; // 可以是string，int，function call等等
 };
 
+class PTO_RETURN : public PTO_BASE {
+public:
+    explicit PTO_RETURN(const uint32_t& row, const uint32_t& col);
+    ~PTO_RETURN();
+
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::RETURN;}
+    void dump(int depth) const;
+
+    void add_value(PTO_EXPRESSION* v) {returnVal.emplace_back(v);}
+private:
+    std::vector<PTO_EXPRESSION*> returnVal;
+};
+
+class PTO_FOR_LOOP : public PTO_BASE{
+public:
+    explicit PTO_FOR_LOOP(const uint32_t& row, const uint32_t& col);
+    ~PTO_FOR_LOOP();
+
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FOR_LOOP;}
+    void dump(int depth) const;
+
+    void set_iterator(PTO_VARIABLE* it) {iter = it;}
+    void set_call_info(PTO_CALL* c) {info = c;}
+
+    void add_init_variable(PTO_VARIABLE* i) {initVar.emplace_back(i);}
+    void add_init_variable(const std::vector<PTO_VARIABLE*>& i) {initVar.insert(initVar.end(), i.begin(), i.end());}
+
+
+    void add_statement(PTO_BASE* statement) {statements.emplace_back(statement);}
+    void add_statement(const std::vector<PTO_BASE*>& s) {statements.insert(statements.end(), s.begin(), s.end());}
+
+
+private:
+    PTO_VARIABLE *iter;
+    std::vector<PTO_VARIABLE*> initVar;
+    PTO_CALL* info;
+    std::vector<PTO_BASE*> statements;
+};
+
 class PTO_FUNC : public PTO_BASE {
 public:
     explicit PTO_FUNC(const std::string& name, const uint32_t& row, const uint32_t& col);
@@ -180,6 +288,7 @@ public:
     void add_arguments(const std::vector<PTO_VARIABLE*>& arg) {arguments = arg;}
     void add_return_type_str(const std::vector<std::string>& str) {returnTypeStr = str;}
     void add_statement(PTO_BASE* statement) {statements.emplace_back(statement);}
+    void add_statement(const std::vector<PTO_BASE*>& s) {statements.insert(statements.end(), s.begin(), s.end());}
 
 private:
     std::string funcName;
