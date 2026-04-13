@@ -5,6 +5,7 @@
 #include <string.h>
 #include <string>
 
+
 // 辅助函数
 static const std::string get_node_text(TSNode node, const std::string& buffer) {
     if (ts_node_is_null(node)) return "";
@@ -132,6 +133,55 @@ static void handle_import(TSNode node, const std::string& buffer, pto_parser::ST
     unimplemented_error(node, buffer);
 }
 
+static pto_parser::PTO_BINARY_OP* parse_comparison_operator(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
+    if (!check_node_type(node, "comparison_operator")) {
+        SPDLOG_ERROR("parse_comparison_operator only used for comparison_operator node");
+        return nullptr;
+    }
+
+    if (ts_node_child_count(node) != 3) {
+        SPDLOG_ERROR("Unexpected Error");
+        return nullptr;
+    }
+
+    pto_parser::PTO_BINARY_OP *ret = nullptr;
+
+    // 根据第二个child确定操作类型
+    if (check_node_type(ts_node_child(node, 1), "==")) {
+        ret = new pto_parser::PTO_BINARY_OP(pto_parser::PTO_OPERATOR::EQUAL, ts_node_start_point(node).row + 1, ts_node_start_point(node).column);
+    }
+    else {
+        unimplemented_error(ts_node_child(node, 1), buffer);
+        return ret;
+    }
+
+    // 处理lhs，目前看到以下几种情况
+    if (check_node_type(node, 0, "identifier")) {
+        ret->set_lhs(new pto_parser::PTO_VARIABLE(
+            get_node_text(ts_node_named_child(node, 0), buffer),
+            ts_node_start_point(ts_node_named_child(node, 0)).row + 1,
+            ts_node_start_point(ts_node_named_child(node, 0)).column
+        ));
+    }
+    else {
+        unimplemented_error(ts_node_named_child(node, 0), buffer);
+    }
+
+    // 处理rhs，目前看到以下几种情况
+    if (check_node_type(node, 1, "integer")) {
+        ret->set_rhs(new pto_parser::PTO_INT(
+            std::stoi(get_node_text(ts_node_named_child(node, 1), buffer)),
+            ts_node_start_point(ts_node_named_child(node, 1)).row + 1,
+            ts_node_start_point(ts_node_named_child(node, 1)).column
+        ));
+    }
+    else {
+        unimplemented_error(ts_node_named_child(node, 1), buffer);
+    }
+
+    return ret;
+}
+
 static pto_parser::PTO_BINARY_OP* parse_binary_operator(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
     if (!check_node_type(node, "binary_operator")) {
         SPDLOG_ERROR("parse_binary_operator only used for binary_operator node");
@@ -223,6 +273,39 @@ static pto_parser::PTO_BINARY_OP* parse_binary_operator(TSNode node, const std::
     return ret;
 }
 
+static pto_parser::PTO_LIST_VAR* create_list_var(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
+    if (!check_node_type(node, "list")) {
+        SPDLOG_ERROR("create_list_var only used for list node");
+        return nullptr;
+    }
+
+    auto ret = new pto_parser::PTO_LIST_VAR(ts_node_start_point(node).row + 1, ts_node_start_point(node).column);
+
+    for (std::size_t i = 0; i < ts_node_named_child_count(node); ++i) {
+        TSNode child = ts_node_named_child(node, i);
+
+        if (check_node_type(child, "identifier")) {
+            ret->add_var(new pto_parser::PTO_VARIABLE(
+                get_node_text(child, buffer),
+                ts_node_start_point(child).row + 1,
+                ts_node_start_point(child).column
+            ));
+        }
+        else if (check_node_type(child, "integer")) {
+            ret->add_var(new pto_parser::PTO_INT(
+                std::stoi(get_node_text(child, buffer)),
+                ts_node_start_point(child).row + 1,
+                ts_node_start_point(child).column
+            ));
+        }
+        else {
+            unimplemented_error(node, buffer);
+        }
+    }
+
+    return ret;
+}
+
 static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP& importAlias) {
     if (!check_node_type(node, "call")) {
         SPDLOG_ERROR("create_call_node only used for call node");
@@ -295,10 +378,15 @@ static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& bu
                     ts_node_start_point(val).column
                 );
                 for (uint32_t j = 0; j < ts_node_named_child_count(val); ++j) {
-                    if (!check_node_type(val, j, "identifier")) {
+                    if (check_node_type(val, j, "identifier")) {
+                        valPtr->add_var(new pto_parser::PTO_VARIABLE(
+                            get_node_text(ts_node_named_child(val, j), buffer),
+                            ts_node_start_point(ts_node_named_child(val, j)).row + 1,
+                            ts_node_start_point(ts_node_named_child(val, j)).column
+                        ));
+                    }
+                    else {
                         unimplemented_error(val, buffer);
-                    } else {
-                        valPtr->add_var(get_node_text(ts_node_named_child(val, j), buffer));
                     }
                 }
                 variable->set_value(valPtr);
@@ -323,6 +411,9 @@ static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& bu
                     ts_node_start_point(val).row + 1,
                     ts_node_start_point(val).column
                 ));
+            }
+            else if (check_node_type(val, "list")) {
+                variable->set_value(create_list_var(val, buffer, importAlias));
             }
             else {
                 unimplemented_error(node, buffer);
@@ -486,12 +577,32 @@ pto_parser::PTO_VARIABLE* create_type_variable(TSNode identifier, TSNode type, c
     // 当前看到两种情况
     if (check_node_type(type, 0, "subscript")) {
         std::string typeStr;
-        for (uint32_t j = 0; j < ts_node_child_count(ts_node_named_child(type, 0)); ++j) {
-            if (check_node_type(ts_node_child(ts_node_named_child(type, 0), j), "attribute")) {
-                std::string temp = get_node_text(ts_node_child(type, j), buffer);
+        TSNode subscript = ts_node_named_child(type, 0);
+
+        for (uint32_t j = 0; j < ts_node_child_count(subscript); ++j) {
+            TSNode child = ts_node_child(subscript, j);
+            if (check_node_type(child, "attribute")) {
+                std::string temp = get_node_text(child, buffer);
                 typeStr += replace_import_alias(temp, importAlias);
-            } else {
-                typeStr += get_node_text(ts_node_child(type, j), buffer);
+            }
+            else if (check_node_type(child, "call")) {
+                auto func = create_call_node(child, buffer, importAlias);
+                if (func == nullptr) {
+                    SPDLOG_ERROR("Unexpected error");
+                }
+                typeStr += func->get_func_name() + "(";
+                
+                if (func->get_arguments().size() != 0) {
+                    typeStr += func->get_arguments()[0]->to_string();
+                }
+                for (std::size_t k = 1; k < func->get_arguments().size(); ++k) {
+                    typeStr += ", " + func->get_arguments()[k]->to_string();
+                }
+                typeStr += ")";
+                delete func;
+            }
+            else {
+                typeStr += get_node_text(child, buffer);
             }
         }
 
@@ -567,6 +678,13 @@ static pto_parser::PTO_ASSIGNMENT* create_typed_assignment(TSNode node, const st
     else if (check_node_type(node, 2, "binary_operator")) {
         auto ptr = parse_binary_operator(ts_node_named_child(node, 2), buffer, importAlias);
         assignNode->set_value(ptr);
+    }
+    else if (check_node_type(node, 2, "identifier")) {
+        assignNode->set_value(new pto_parser::PTO_VARIABLE(
+            get_node_text(ts_node_named_child(node, 2), buffer),
+            ts_node_start_point(ts_node_named_child(node, 2)).row + 1,
+            ts_node_start_point(ts_node_named_child(node, 2)).column
+        ));
     }
     else {
         unimplemented_error(ts_node_named_child(node, 2), buffer);
@@ -654,7 +772,21 @@ static std::vector<pto_parser::PTO_BASE*> parse_block_node(TSNode node, const st
             }
         }
         else if (check_node_type(statement, "if_statement")) {
-            SPDLOG_INFO("需要实现");
+            auto ptr = new pto_parser::PTO_IF(ts_node_start_point(statement).row + 1, ts_node_start_point(statement).column);
+            // 第一个child是comparator
+            ptr->set_comparator(parse_comparison_operator(ts_node_named_child(statement, 0), buffer, importAlias));
+
+            // 第二个child是block
+            ptr->add_if_statements(parse_block_node(ts_node_named_child(statement, 1), buffer, importAlias));
+
+            // 处理第三个child是else_clause的情况
+            if (!check_node_type(statement, 2, "else_clause")) {
+                unimplemented_error(ts_node_named_child(statement, 2), buffer);
+            } else {
+                ptr->add_else_statements(parse_block_node(ts_node_named_child(ts_node_named_child(statement, 2), 0), buffer, importAlias));
+            }
+            
+            ret.emplace_back(ptr);
             continue;
         }
         else if (check_node_type(statement, "return_statement")) {
@@ -855,7 +987,7 @@ static pto_parser::PTO_CLASS* create_class_node(TSNode node, const std::string& 
     }
 
     pto_parser::PTO_CLASS* ret = new pto_parser::PTO_CLASS(
-        get_node_text(ts_node_named_child(node, 1), buffer),
+        get_node_text(ts_node_named_child(node, 0), buffer),
         ts_node_start_point(node).row + 1,
         ts_node_start_point(node).column
     );

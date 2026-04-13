@@ -19,10 +19,19 @@ PTO_VARIABLE::PTO_VARIABLE(const std::string& name, const uint32_t& row, const u
       typeStr()
 {}
 
-void PTO_VARIABLE::dump(int depth) const {
-    SPDLOG_INFO("{}{}", std::string(depth * 2, ' '), varName);
-    for (const auto& t : typeStr) {
-        SPDLOG_INFO("{}type = {}", std::string(depth * 2, ' '), t);
+void PTO_VARIABLE::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << varName;
+    
+    // 只输出typeStr
+    if (typeStr.size() == 1) {    
+        fout << " : " << typeStr[0];
+    } else if (typeStr.size() > 1) {
+        fout << " : pypto.language.Tuple([" << typeStr[0];
+        for (std::size_t i = 1; i < typeStr.size(); ++i) {
+            fout << ", " << typeStr[i];
+        }
+        fout << "])";
     }
 }
 
@@ -35,18 +44,73 @@ PTO_TUPLE_VAR::PTO_TUPLE_VAR(const uint32_t& row, const uint32_t& col)
       varList()
 {}
 
-void PTO_TUPLE_VAR::dump(int depth) const {
-    SPDLOG_INFO("{}Tuple of:", std::string(depth * 2, ' '));
-    for (const auto& str : varList) {
-        SPDLOG_INFO("{}{}", std::string(depth * 2 + 2, ' '), str);
+PTO_TUPLE_VAR::~PTO_TUPLE_VAR() {
+    for (std::size_t i = 0; i < varList.size(); ++i) {
+        delete varList[i];
     }
+}
+
+void PTO_TUPLE_VAR::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << "(";
+    if (varList.size() != 0) {
+        varList[0]->dump(0, fout);
+    }
+    for (std::size_t i = 1; i < varList.size(); ++i) {
+        fout << ", ";
+        varList[i]->dump(0, fout);
+    }
+    fout << ")";
 }
 
 const std::string PTO_TUPLE_VAR::to_string() const {
     std::stringstream ss;
-    for (const auto& str : varList) {
-        ss << str << ", ";
+    ss << "(";
+    if (varList.size() != 0) {
+        ss << varList[0]->to_string();
     }
+    for (std::size_t i = 1; i < varList.size(); ++i) {
+        ss << ", ";
+        ss << varList[i]->to_string();
+    }
+    ss << ")";
+    return ss.str();
+}
+
+PTO_LIST_VAR::PTO_LIST_VAR(const uint32_t& row, const uint32_t& col)
+    : PTO_EXPRESSION(row, col),
+      varList()
+{}
+
+PTO_LIST_VAR::~PTO_LIST_VAR() {
+    for (std::size_t i = 0; i < varList.size(); ++i) {
+        delete varList[i];
+    }
+}
+
+void PTO_LIST_VAR::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << "[";
+    if (varList.size() != 0) {
+        varList[0]->dump(0, fout);
+    }
+    for (std::size_t i = 1; i < varList.size(); ++i) {
+        fout << ", ";
+        varList[i]->dump(0, fout);
+    }
+    fout << "]";
+}
+
+const std::string PTO_LIST_VAR::to_string() const {
+    std::stringstream ss;
+    ss << "[";
+    if (varList.size() != 0) {
+        ss << varList[0]->to_string();
+    }
+    for (std::size_t i = 1; i < varList.size(); ++i) {
+        ss << ", " << varList[i]->to_string();
+    }
+    ss << "]";
     return ss.str();
 }
 
@@ -55,8 +119,9 @@ PTO_FLOAT::PTO_FLOAT(const float& v, const uint32_t& row, const uint32_t& col)
       value(v)
 {}
 
-void PTO_FLOAT::dump(int depth) const {
-    SPDLOG_INFO("{}float value = {}", std::string(depth * 2, ' '), value);
+void PTO_FLOAT::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << value;
 }
 
 const std::string PTO_FLOAT::to_string() const {
@@ -70,8 +135,9 @@ PTO_INT::PTO_INT(const int& v, const uint32_t& row, const uint32_t& col)
       value(v)
 {}
 
-void PTO_INT::dump(int depth) const {
-    SPDLOG_INFO("{}int value = {}", std::string(depth * 2, ' '), value);
+void PTO_INT::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << value;
 }
 
 const std::string PTO_INT::to_string() const {
@@ -85,8 +151,10 @@ PTO_BOOL::PTO_BOOL(const bool& v, const uint32_t& row, const uint32_t& col)
       value(v)
 {}
 
-void PTO_BOOL::dump(int depth) const {
-    SPDLOG_INFO("{}bool value = {}", std::string(depth * 2, ' '), value);
+void PTO_BOOL::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    if (value) fout << indent << "True";
+    else       fout << indent << "False";
 }
 
 const std::string PTO_BOOL::to_string() const {
@@ -106,8 +174,23 @@ PTO_BINARY_OP::~PTO_BINARY_OP() {
     if (rhs != nullptr) delete rhs;
 }
 
-void PTO_BINARY_OP::dump(int depth) const {
-    SPDLOG_INFO("{}{}", std::string(depth * 2, ' '), this->to_string());
+void PTO_BINARY_OP::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << '(';
+    if (lhs != nullptr)
+        lhs->dump(0, fout);
+    
+    switch (op) {
+        case PTO_OPERATOR::ADD: fout << " + "; break;
+        case PTO_OPERATOR::MUL: fout << " * "; break;
+        case PTO_OPERATOR::FLOOR_DIV: fout << " // "; break;
+        case PTO_OPERATOR::SUB: fout << " - "; break;
+        case PTO_OPERATOR::EQUAL: fout << " == "; break;
+    }
+    if (rhs != nullptr)
+        rhs->dump(0, fout);
+    
+    fout << ")";
 }
 
 const std::string PTO_BINARY_OP::to_string() const {
@@ -119,6 +202,7 @@ const std::string PTO_BINARY_OP::to_string() const {
         case PTO_OPERATOR::MUL: ss << " * "; break;
         case PTO_OPERATOR::FLOOR_DIV: ss << " // "; break;
         case PTO_OPERATOR::SUB: ss << " - "; break;
+        case PTO_OPERATOR::EQUAL: ss << " == "; break;
     }
     ss << rhs->to_string();
     ss << ")";
@@ -131,11 +215,9 @@ PTO_INDEXED_VAR::PTO_INDEXED_VAR(const std::string& n, const int& i, const uint3
       index(std::vector<int>(1, i))
 {}
 
-void PTO_INDEXED_VAR::dump(int depth) const {
-    if (index.size() != 1) {
-        SPDLOG_ERROR("Unexpected index dimension for PTO_INDEXED_VAR");
-    }
-    SPDLOG_INFO("{}{}[{}]", std::string(depth * 2, ' '), varName, index[0]);
+void PTO_INDEXED_VAR::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << varName << "[" << index[0] << "]";
 }
 
 const std::string PTO_INDEXED_VAR::to_string() const {
@@ -159,12 +241,19 @@ PTO_CALL::~PTO_CALL() {
     }
 }
 
-void PTO_CALL::dump(int depth) const {
-    SPDLOG_INFO("{}{}(", std::string(depth * 2, ' '), funcName);
-    for (const auto& arg : arguments) {
-        arg->dump(depth + 1);
+void PTO_CALL::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << funcName << "(";
+
+    if (arguments.size() != 0) {
+        arguments[0]->dump(0, fout);
     }
-    SPDLOG_INFO("{})", std::string(depth * 2, ' '));
+    for (std::size_t i = 1; i < arguments.size(); ++i) {
+        fout << ", ";
+        arguments[i]->dump(0, fout);
+    }
+
+    fout << ")";
 }
 
 const std::string PTO_CALL::to_string() const {
@@ -187,11 +276,12 @@ PTO_KEYWORD::~PTO_KEYWORD() {
     if (value != nullptr) delete value;
 }
 
-void PTO_KEYWORD::dump(int depth) const {
-    SPDLOG_INFO("{}{} =", std::string(depth * 2, ' '), keyword);
-    
-    if (value != nullptr)
-        value->dump(depth + 1);
+void PTO_KEYWORD::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent << keyword << " = ";
+    if (value != nullptr) {
+        value->dump(0, fout);
+    }
 }
 
 const std::string PTO_KEYWORD::to_string() const {
@@ -226,12 +316,17 @@ PTO_ASSIGNMENT::~PTO_ASSIGNMENT() {
         delete value;
 }
 
-void PTO_ASSIGNMENT::dump(int depth) const {
-    SPDLOG_INFO("{}ASSIGNMENT:", std::string(depth * 2, ' '));
-    SPDLOG_INFO("{}lhs is:", std::string(depth * 2 + 2, ' '));
-    lhs->dump(depth + 1);
-    SPDLOG_INFO("{}rhs is:", std::string(depth * 2 + 2, ' '));
-    value->dump(depth + 1);
+void PTO_ASSIGNMENT::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    fout << indent;
+
+    if (lhs != nullptr) {
+        lhs->dump(0, fout);
+    }
+    fout << " = ";
+    if (value != nullptr) {
+        value->dump(0, fout);
+    }
 }
 
 PTO_RETURN::PTO_RETURN(const uint32_t& row, const uint32_t& col)
@@ -245,10 +340,15 @@ PTO_RETURN::~PTO_RETURN() {
     }
 }
 
-void PTO_RETURN::dump(int depth) const {
-    SPDLOG_INFO("{}Return:", std::string(depth * 2, ' '));
-    for (const auto& ptr : returnVal) {
-        ptr->dump(depth + 1);
+void PTO_RETURN::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    if (returnVal.size() != 0) {
+        fout << indent << "return ";
+        returnVal[0]->dump(0, fout);
+        for (std::size_t i = 1; i < returnVal.size(); ++i) {
+            fout << ", ";
+            returnVal[i]->dump(0, fout);
+        }
     }
 }
 
@@ -273,17 +373,68 @@ PTO_FOR_LOOP::~PTO_FOR_LOOP() {
     }
 }
 
-void PTO_FOR_LOOP::dump(int depth) const {
-    SPDLOG_INFO("{}For loop:", std::string(depth * 2, ' '));
-    SPDLOG_INFO("{}Iterator:", std::string(depth * 2 + 2, ' '));
-    iter->dump(depth + 2);
-    SPDLOG_INFO("{}Init Variable", std::string(depth * 2 + 2, ' '));
-    for (const auto& ptr : initVar) {
-        ptr->dump(depth + 2);
+void PTO_FOR_LOOP::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+
+    fout << indent << "for ";
+    if (iter != nullptr) {
+        iter->dump(0, fout);
     }
-    info->dump(depth + 1);
+    fout << ", (";
+    if (initVar.size() != 0) {
+        initVar[0]->dump(0, fout);
+    }
+    for (std::size_t i = 1; i < initVar.size(); ++i) {
+        fout << ", ";
+        initVar[i]->dump(0, fout);
+    }
+    fout << ") in ";
+    if (info != nullptr) {
+        info->dump(0, fout);
+    }
+    fout << ":" << std::endl;
+
     for (const auto& ptr : statements) {
-        ptr->dump(depth + 1);
+        ptr->dump(depth + 1, fout);
+        fout << std::endl;
+    }
+}
+
+PTO_IF::PTO_IF(const uint32_t& row, const uint32_t& col)
+    : PTO_BASE(row, col),
+      comparator(nullptr),
+      ifStatement(),
+      elseStatement()
+{}
+
+PTO_IF::~PTO_IF() {
+    if (comparator != nullptr) delete comparator;
+    for (std::size_t i = 0; i < ifStatement.size(); ++i) {
+        delete ifStatement[i];
+    }
+    for (std::size_t i = 0; i < elseStatement.size(); ++i) {
+        delete elseStatement[i];
+    }
+}
+
+void PTO_IF::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+
+    fout << indent << "if (";
+    if (comparator != nullptr) {
+        comparator->dump(0, fout);
+    }
+    fout << "):" << std::endl;
+    for (const auto& ptr : ifStatement) {
+        ptr->dump(depth + 1, fout);
+        fout << std::endl;
+    }
+    if (elseStatement.size() != 0) {
+        fout << indent << "else:" << std::endl;
+    }
+    for (const auto& ptr : elseStatement) {
+        ptr->dump(depth + 1, fout);
+        fout << std::endl;
     }
 }
 
@@ -305,23 +456,36 @@ PTO_FUNC::~PTO_FUNC() {
     }
 }
 
-void PTO_FUNC::dump(int depth) const {
-    SPDLOG_INFO("{}Decorate = {}", std::string(depth * 2, ' '), decorate);
-    SPDLOG_INFO("{}Func Name = {}", std::string(depth * 2, ' '), funcName);
-    SPDLOG_INFO("{}Input Parameters:", std::string(depth * 2, ' '));
-    for (const auto& ptr : arguments) {
-        ptr->dump(depth + 1);
+void PTO_FUNC::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    if (decorate != "") {
+        fout << indent << "@" << decorate << std::endl;
     }
+    fout << indent << "def " << funcName << "(";
+
+    if (arguments.size() != 0) {
+        arguments[0]->dump(0, fout);
+    }
+    for (std::size_t i = 1; i < arguments.size(); ++i) {
+        fout << ", ";
+        arguments[i]->dump(0, fout);
+    }
+    fout << ")";
+
     if (returnTypeStr.size() == 1) {
-        SPDLOG_INFO("{}Return Type = {}", std::string(depth * 2, ' '), returnTypeStr[0]);
+        fout << " -> " << returnTypeStr[0];
     } else if (returnTypeStr.size() > 1) {
-        SPDLOG_INFO("{}Return Type is tuple of:", std::string(depth * 2, ' '));
-        for (const auto& str: returnTypeStr) {
-            SPDLOG_INFO("{}  {}", std::string(depth * 2, ' '), str);
+        fout << " -> " << "tuple[" << returnTypeStr[0];
+        for (std::size_t i = 1; i < returnTypeStr.size(); ++i) {
+            fout << ", " << returnTypeStr[i];
         }
+        fout << "]";
     }
-    for (const auto& ptr : statements) {
-        ptr->dump(depth + 1);
+    fout << ":" << std::endl;
+
+    for (const auto& ptr : statements){
+        ptr->dump(depth + 1, fout);
+        fout << std::endl;
     }
 }
 
@@ -337,10 +501,14 @@ PTO_CLASS::~PTO_CLASS() {
         delete functions[i];
 }
 
-void PTO_CLASS::dump(int depth) const {
-    SPDLOG_INFO("{} Decorate = {}", std::string(depth * 2, ' '), decorate);
-    for (std::size_t i = 0; i < functions.size(); i ++) {
-        functions[i]->dump(depth + 1);
+void PTO_CLASS::dump(int depth, std::ofstream& fout) const {
+    std::string indent = std::string(depth, '\t');
+    if (decorate != "") {
+        fout << indent << '@' << decorate << std::endl;
+    }
+    fout << indent << "class " << name << ":" << std::endl;
+    for (const auto& ptr : functions) {
+        ptr->dump(depth + 1, fout);
     }
 }
 
@@ -369,18 +537,21 @@ void PTO_MODULE::add_class(PTO_CLASS *c) {
     classes.emplace_back(c);
 }
 
-void PTO_MODULE::dump(int depth) {
-    SPDLOG_INFO("MODULE INFO");
+void PTO_MODULE::dump(int depth, std::ofstream& fout) {
+    std::string indent = std::string(depth, '\t');
+
+    // 输出import
+    fout << indent << "import pypto.language" << std::endl << std::endl;
 
     // 输出全局变量
-    SPDLOG_INFO("{}Got {} global variables:", std::string(depth * 2, ' '), globalVariable.size());
     for (const auto& it : globalVariable) {
-        SPDLOG_INFO("{}Variable Name = '{}'",  std::string(depth * 2 + 2, ' '), it.first);
-        it.second->dump(depth + 1);
+        it.second->dump(depth, fout);
+        fout << std::endl;
     }
+    fout << std::endl;
 
-    for (std::size_t i = 0; i < classes.size(); i ++) {
-        classes[i]->dump(depth + 1);
+    for (const auto& ptr : classes) {
+        ptr->dump(depth, fout);
     }
 }
 

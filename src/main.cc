@@ -1,6 +1,7 @@
 #include "options.hh"
 #include "logger.hh"
 #include "parser.hh"
+#include <filesystem>
 
 
 int main(int argc, char** argv) {
@@ -23,6 +24,26 @@ int main(int argc, char** argv) {
     if (module == nullptr) {
         return 1;
     }
+
+    // 正确性检查
+
+    // 死代码消除
+    
+    // 将优化过的代码输出到文件
+    std::filesystem::path ptoFile = std::filesystem::path(options.output_dir) /
+                                    (std::filesystem::path(options.input_file).stem().string() + "_opt.py");
+    
+    std::ofstream fout(ptoFile, std::ios::out);
+
+    if (!fout.is_open()) {
+        SPDLOG_ERROR("Failed to open file: {}", ptoFile.string());
+        delete module;
+        return 1;
+    }
+
+    module->dump(0, fout);
+
+    fout.close();
 
     // Clean up
     delete module;
