@@ -25,7 +25,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // 正确性检查
+    // 处理变量的类型，并做正确性检查
+    if (!module->type_check()) {
+        delete module;
+        return 1;
+    }
+
 
     // 死代码消除
     

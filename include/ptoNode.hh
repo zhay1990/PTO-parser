@@ -9,7 +9,19 @@
 
 namespace pto_parser {
 typedef std::unordered_map<std::string, std::string> STR_STR_MAP;
-enum class PTO_EXPRESSION_TYPE{
+
+enum class PTO_NODE_TYPE {
+    MODULE,
+    CLASS,
+    FUNCTION,
+    
+    // STATEMENT
+    ASSIGNMENT,
+    RETURN,
+    FOR_LOOP,
+    IF,
+    
+    // EXPRESSION
     VARIABLE,
     TYPED_VARIABLE,
     TUPLE_VARIABLE,
@@ -18,38 +30,43 @@ enum class PTO_EXPRESSION_TYPE{
     FLOAT_CONSTANT,
     INT_CONSTANT,
     BOOL_CONSTANT,
-    CALL,
+    FUNC_CALL,
     KEYWORD,
     BINARY_OP
 };
 
-class PTO_EXPRESSION{
+class PTO_BASE {
 public:
-    PTO_EXPRESSION(const uint32_t& row, const uint32_t& col);
-    virtual ~PTO_EXPRESSION() = default;
+    PTO_BASE(const uint32_t& row, const uint32_t& col);
+    virtual ~PTO_BASE() = default;
 
-    virtual PTO_EXPRESSION_TYPE type() const = 0;
-
+    virtual PTO_NODE_TYPE type() const = 0;
     virtual void dump(int depth, std::ofstream& fout) const = 0;
-    virtual const std::string to_string() const = 0;
+    virtual bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) = 0;
+
+    virtual const std::string to_string() const {return "";}
 
     const uint32_t& row() const {return row_;}
     const uint32_t& col() const {return col_;}
+    const std::string& decorator() const {return decorator_;}
+
 protected:
+    std::string decorator_;
     uint32_t row_, col_;
 };
 
-class PTO_VARIABLE : public PTO_EXPRESSION {
+class PTO_VARIABLE : public PTO_BASE {
 public:
     explicit PTO_VARIABLE(const std::string& varName, const uint32_t& row, const uint32_t& col);
     ~PTO_VARIABLE() = default;
 
-    PTO_EXPRESSION_TYPE type() const {
-        if (varType == "") return PTO_EXPRESSION_TYPE::VARIABLE;
-        else               return PTO_EXPRESSION_TYPE::TYPED_VARIABLE;
+    PTO_NODE_TYPE type() const {
+        if (varType == "") return PTO_NODE_TYPE::VARIABLE;
+        else               return PTO_NODE_TYPE::TYPED_VARIABLE;
     }
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
     void add_type_str(const std::string& str) {typeStr.emplace_back(str);}
 private:
@@ -67,68 +84,73 @@ private:
     std::vector<std::string> typeStr;
 };
 
-class PTO_TUPLE_VAR : public PTO_EXPRESSION {
+class PTO_TUPLE_VAR : public PTO_BASE {
 public:
     explicit PTO_TUPLE_VAR(const uint32_t& row, const uint32_t& col);
     ~PTO_TUPLE_VAR();
 
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::TUPLE_VARIABLE;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::TUPLE_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
-    void add_var(PTO_EXPRESSION* ptr) {varList.emplace_back(ptr);}
+    void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
 private:
-    std::vector<PTO_EXPRESSION*> varList;
+    std::vector<PTO_BASE*> varList;
 };
 
-class PTO_LIST_VAR : public PTO_EXPRESSION {
+class PTO_LIST_VAR : public PTO_BASE {
 public:
     explicit PTO_LIST_VAR(const uint32_t& row, const uint32_t& col);
     ~PTO_LIST_VAR();
 
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::LIST_VARIABLE;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::LIST_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
-    void add_var(PTO_EXPRESSION* ptr) {varList.emplace_back(ptr);}
+    void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
 private:
-    std::vector<PTO_EXPRESSION*> varList;
+    std::vector<PTO_BASE*> varList;
 };
 
-class PTO_FLOAT : public PTO_EXPRESSION {
+class PTO_FLOAT : public PTO_BASE {
 public:
     explicit PTO_FLOAT(const float& value, const uint32_t& row, const uint32_t& col);
     ~PTO_FLOAT() = default;
     
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::FLOAT_CONSTANT;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FLOAT_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
 private:
     float value;
 };
 
-class PTO_INT : public PTO_EXPRESSION {
+class PTO_INT : public PTO_BASE {
 public:
     explicit PTO_INT(const int& value, const uint32_t& row, const uint32_t& col);
     ~PTO_INT() = default;
     
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::INT_CONSTANT;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::INT_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
 private:
     int value;
 };
 
-class PTO_BOOL : public PTO_EXPRESSION {
+class PTO_BOOL : public PTO_BASE {
 public:
     explicit PTO_BOOL(const bool& value, const uint32_t& row, const uint32_t& col);
     ~PTO_BOOL() = default;
     
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::BOOL_CONSTANT;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::BOOL_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
 private:
     bool value;
@@ -141,31 +163,33 @@ enum class PTO_OPERATOR {
     FLOOR_DIV,
     EQUAL
 };
-class PTO_BINARY_OP : public PTO_EXPRESSION {
+class PTO_BINARY_OP : public PTO_BASE {
 public:
     explicit PTO_BINARY_OP(PTO_OPERATOR op, const uint32_t& row, const uint32_t& col);
     ~PTO_BINARY_OP();
 
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::BINARY_OP;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::BINARY_OP;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
-    void set_lhs (PTO_EXPRESSION *l) {lhs = l;}
-    void set_rhs (PTO_EXPRESSION *r) {rhs = r;}
+    void set_lhs (PTO_BASE *l) {lhs = l;}
+    void set_rhs (PTO_BASE *r) {rhs = r;}
 
 private:
-    PTO_EXPRESSION *lhs, *rhs;
+    PTO_BASE *lhs, *rhs;
     PTO_OPERATOR op;
 };
 
-class PTO_INDEXED_VAR : public PTO_EXPRESSION {
+class PTO_INDEXED_VAR : public PTO_BASE {
 public:
     explicit PTO_INDEXED_VAR(const std::string& varName, const int& index, const uint32_t& row, const uint32_t& col);
     ~PTO_INDEXED_VAR() = default;
 
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::INDEXED_VARIABLE;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::INDEXED_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
 private:
     std::string varName;
@@ -173,69 +197,42 @@ private:
     std::vector<int> index;
 };
 
-class PTO_CALL : public PTO_EXPRESSION {
+class PTO_CALL : public PTO_BASE {
 public:
     explicit PTO_CALL(const std::string& funcName, const uint32_t& row, const uint32_t& col);
     ~PTO_CALL();
 
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::CALL;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNC_CALL;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
     
-    void add_arguments(const std::vector<PTO_EXPRESSION*>& args) {arguments = args;}
+    void add_arguments(const std::vector<PTO_BASE*>& args) {arguments = args;}
 
     const std::string& get_func_name() const {return funcName;}
-    const std::vector<PTO_EXPRESSION*>& get_arguments() const {return arguments;}
+    const std::vector<PTO_BASE*>& get_arguments() const {return arguments;}
 private:
     std::string funcName;
-    std::vector<PTO_EXPRESSION*> arguments;
+    std::vector<PTO_BASE*> arguments;
 };
 
-class PTO_KEYWORD : public PTO_EXPRESSION {
+class PTO_KEYWORD : public PTO_BASE {
 public:
     explicit PTO_KEYWORD(const std::string& keyword, const uint32_t& row, const uint32_t& col);
     ~PTO_KEYWORD();
 
-    PTO_EXPRESSION_TYPE type() const {return PTO_EXPRESSION_TYPE::KEYWORD;}
+    PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::KEYWORD;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
     
-    void set_value(PTO_EXPRESSION* v) {value = v;}
+    void set_value(PTO_BASE* v) {value = v;}
 private:
     std::string keyword;
-    PTO_EXPRESSION* value;
+    PTO_BASE* value;
 
-};
-
-enum class PTO_NODE_TYPE {
-    MODULE,
-    CLASS,
-    FUNCTION,
-    ASSIGNMENT,
-    RETURN,
-    FOR_LOOP,
-    IF
-};
-
-class PTO_BASE {
-public:
-    PTO_BASE();
-    PTO_BASE(const uint32_t& row, const uint32_t& col);
-    virtual ~PTO_BASE() = default;
-
-    virtual PTO_NODE_TYPE type() const = 0;
-    virtual void dump(int depth, std::ofstream& fout) const = 0;
-
-
-    const uint32_t& row() const {return row_;}
-    const uint32_t& col() const {return col_;}
-    const std::string& decorator() const {return decorator_;}
-
-protected:
-    std::string decorator_;
-    uint32_t row_, col_;
 };
 
 class PTO_ASSIGNMENT : public PTO_BASE {
@@ -245,14 +242,15 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::ASSIGNMENT;}
     void dump(int depth, std::ofstream& fout) const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
-    void set_value(PTO_EXPRESSION* v) {value = v;}
+    void set_value(PTO_BASE* v) {value = v;}
 
     PTO_VARIABLE* get_lhs() const {return lhs;}
 
 private:
     PTO_VARIABLE *lhs;
-    PTO_EXPRESSION *value; // 可以是string，int，function call等等
+    PTO_BASE *value; // 可以是string，int，function call等等
 };
 
 class PTO_RETURN : public PTO_BASE {
@@ -262,10 +260,11 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::RETURN;}
     void dump(int depth, std::ofstream& fout) const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
-    void add_value(PTO_EXPRESSION* v) {returnVal.emplace_back(v);}
+    void add_value(PTO_BASE* v) {returnVal.emplace_back(v);}
 private:
-    std::vector<PTO_EXPRESSION*> returnVal;
+    std::vector<PTO_BASE*> returnVal;
 };
 
 class PTO_FOR_LOOP : public PTO_BASE{
@@ -275,6 +274,7 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FOR_LOOP;}
     void dump(int depth, std::ofstream& fout) const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
     void set_iterator(PTO_VARIABLE* it) {iter = it;}
     void set_call_info(PTO_CALL* c) {info = c;}
@@ -301,6 +301,7 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::IF;}
     void dump(int depth, std::ofstream& fout) const;
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
     void set_comparator(PTO_BINARY_OP *comp) {comparator = comp;}
     void add_if_statements(const std::vector<PTO_BASE*>& s) {ifStatement.insert(ifStatement.end(), s.begin(), s.end());}
@@ -318,6 +319,7 @@ public:
 
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNCTION;}
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_arguments(const std::vector<PTO_VARIABLE*>& arg) {arguments = arg;}
@@ -340,6 +342,7 @@ public:
 
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::CLASS;}
+    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_function_def(PTO_FUNC* ptr) {functions.emplace_back(ptr);}
@@ -358,10 +361,11 @@ public:
 
     void dump(int depth, std::ofstream& fout);
 
-    void add_class(PTO_CLASS* c);
+    void add_class_or_func(PTO_BASE* c) {classOrFunc.emplace_back(c);};
+
+    bool type_check() const;
 private:
-    std::vector<PTO_CLASS*> classes;
-    std::vector<PTO_FUNC*>  functions;
+    std::vector<PTO_BASE*> classOrFunc;
     std::unordered_map<std::string, PTO_ASSIGNMENT*> globalVariable;
 };
 

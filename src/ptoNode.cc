@@ -3,15 +3,15 @@
 #include <sstream>
 
 namespace pto_parser {
-
-PTO_EXPRESSION::PTO_EXPRESSION(const uint32_t& row, const uint32_t& col)
-    : row_(row),
-      col_(col)
+PTO_BASE::PTO_BASE(const uint32_t& r, const uint32_t& c)
+    : decorator_(),
+      row_(r),
+      col_(c)
 {}
 
 
 PTO_VARIABLE::PTO_VARIABLE(const std::string& name, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       varName(name),
       varType(""),
       dataType(""),
@@ -39,8 +39,12 @@ const std::string PTO_VARIABLE::to_string() const {
     return varName;
 }
 
+bool PTO_VARIABLE::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_TUPLE_VAR::PTO_TUPLE_VAR(const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       varList()
 {}
 
@@ -77,8 +81,12 @@ const std::string PTO_TUPLE_VAR::to_string() const {
     return ss.str();
 }
 
+bool PTO_TUPLE_VAR::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_LIST_VAR::PTO_LIST_VAR(const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       varList()
 {}
 
@@ -114,8 +122,12 @@ const std::string PTO_LIST_VAR::to_string() const {
     return ss.str();
 }
 
+bool PTO_LIST_VAR::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_FLOAT::PTO_FLOAT(const float& v, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       value(v)
 {}
 
@@ -130,8 +142,12 @@ const std::string PTO_FLOAT::to_string() const {
     return ss.str();
 }
 
+bool PTO_FLOAT::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_INT::PTO_INT(const int& v, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       value(v)
 {}
 
@@ -146,8 +162,12 @@ const std::string PTO_INT::to_string() const {
     return ss.str();
 }
 
+bool PTO_INT::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_BOOL::PTO_BOOL(const bool& v, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       value(v)
 {}
 
@@ -162,8 +182,12 @@ const std::string PTO_BOOL::to_string() const {
     else return "false";
 }
 
+bool PTO_BOOL::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_BINARY_OP::PTO_BINARY_OP(PTO_OPERATOR o, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       lhs(nullptr),
       rhs(nullptr),
       op(o)
@@ -209,8 +233,12 @@ const std::string PTO_BINARY_OP::to_string() const {
     return ss.str();
 }
 
+bool PTO_BINARY_OP::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_INDEXED_VAR::PTO_INDEXED_VAR(const std::string& n, const int& i, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       varName(n),
       index(std::vector<int>(1, i))
 {}
@@ -229,8 +257,12 @@ const std::string PTO_INDEXED_VAR::to_string() const {
     return ss.str();
 }
 
+bool PTO_INDEXED_VAR::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_CALL::PTO_CALL(const std::string& name, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       funcName(name),
       arguments()
 {}
@@ -266,8 +298,12 @@ const std::string PTO_CALL::to_string() const {
     return ret;
 }
 
+bool PTO_CALL::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_KEYWORD::PTO_KEYWORD(const std::string& name, const uint32_t& row, const uint32_t& col)
-    : PTO_EXPRESSION(row, col),
+    : PTO_BASE(row, col),
       keyword(name),
       value(nullptr)
 {}
@@ -288,20 +324,9 @@ const std::string PTO_KEYWORD::to_string() const {
     return keyword + " = " + value->to_string();
 }
 
-
-
-PTO_BASE::PTO_BASE()
-    : decorator_(),
-      row_(),
-      col_()
-{}
-
-PTO_BASE::PTO_BASE(const uint32_t& r, const uint32_t& c)
-    : decorator_(),
-      row_(r),
-      col_(c)
-{}
-
+bool PTO_KEYWORD::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
 
 PTO_ASSIGNMENT::PTO_ASSIGNMENT(PTO_VARIABLE *l, const uint32_t& r, const uint32_t& c)
     : PTO_BASE(r, c),
@@ -329,6 +354,29 @@ void PTO_ASSIGNMENT::dump(int depth, std::ofstream& fout) const {
     }
 }
 
+bool PTO_ASSIGNMENT::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    // 先解析rhs
+    switch (value->type()) {
+        case PTO_NODE_TYPE::FUNC_CALL: // 函数调用
+        // 基于函数名做处理
+        if (((PTO_CALL*)value)->get_func_name() == "pypto.language.dynamic") {
+            // 基于现在对PTO的理解，这是声明变量类型，而非变量赋值，暂时不处理
+        }
+        else {
+            SPDLOG_ERROR("Unimplemented function in PTO_ASSIGNMENT:");
+            return false;
+        }
+
+        break;
+        default:
+        SPDLOG_ERROR("Unimplemented type in PTO_ASSIGNMENT:");
+        return false;
+    }
+    
+    
+    return true;
+}
+
 PTO_RETURN::PTO_RETURN(const uint32_t& row, const uint32_t& col)
     : PTO_BASE(row, col),
       returnVal()
@@ -350,6 +398,10 @@ void PTO_RETURN::dump(int depth, std::ofstream& fout) const {
             returnVal[i]->dump(0, fout);
         }
     }
+}
+
+bool PTO_RETURN::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
 }
 
 PTO_FOR_LOOP::PTO_FOR_LOOP(const uint32_t& row, const uint32_t& col)
@@ -400,6 +452,10 @@ void PTO_FOR_LOOP::dump(int depth, std::ofstream& fout) const {
     }
 }
 
+bool PTO_FOR_LOOP::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_IF::PTO_IF(const uint32_t& row, const uint32_t& col)
     : PTO_BASE(row, col),
       comparator(nullptr),
@@ -436,6 +492,10 @@ void PTO_IF::dump(int depth, std::ofstream& fout) const {
         ptr->dump(depth + 1, fout);
         fout << std::endl;
     }
+}
+
+bool PTO_IF::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
 }
 
 PTO_FUNC::PTO_FUNC(const std::string& n, const uint32_t& r, const uint32_t& c)
@@ -489,6 +549,10 @@ void PTO_FUNC::dump(int depth, std::ofstream& fout) const {
     }
 }
 
+bool PTO_FUNC::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    return true;
+}
+
 PTO_CLASS::PTO_CLASS(const std::string& n, const uint32_t& r, const uint32_t& c)
     : PTO_BASE(r, c),
       name(n),
@@ -512,17 +576,31 @@ void PTO_CLASS::dump(int depth, std::ofstream& fout) const {
     }
 }
 
+bool PTO_CLASS::type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) {
+    if (validVar.find(name) != validVar.end()) {
+        SPDLOG_ERROR("Duplicated definition of '{}'", name);
+        return false;
+    }
+    validVar[name] = this;
+    std::unordered_map<std::string, PTO_BASE*> localValidVar = validVar;
+
+    for (const auto& ptr : functions) {
+        if (!ptr->type_check(localValidVar)) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
 PTO_MODULE::PTO_MODULE()
-    : classes(),
-      functions(),
+    : classOrFunc(),
       globalVariable()
 {}
 
 PTO_MODULE::~PTO_MODULE() {
-    for (std::size_t i = 0; i < classes.size(); ++i)
-        delete classes[i];
-    for (std::size_t i = 0; i < functions.size(); ++i)
-        delete functions[i];
+    for (std::size_t i = 0; i < classOrFunc.size(); ++i)
+        delete classOrFunc[i];
     for (auto& it : globalVariable) {
         delete it.second;
     }    
@@ -531,10 +609,6 @@ PTO_MODULE::~PTO_MODULE() {
 
 void PTO_MODULE::add_global_variable(PTO_ASSIGNMENT *assign) {
     globalVariable[assign->get_lhs()->to_string()] = assign;
-}
-
-void PTO_MODULE::add_class(PTO_CLASS *c) {
-    classes.emplace_back(c);
 }
 
 void PTO_MODULE::dump(int depth, std::ofstream& fout) {
@@ -550,9 +624,33 @@ void PTO_MODULE::dump(int depth, std::ofstream& fout) {
     }
     fout << std::endl;
 
-    for (const auto& ptr : classes) {
+    for (const auto& ptr : classOrFunc) {
         ptr->dump(depth, fout);
     }
+}
+
+bool PTO_MODULE::type_check() const {
+    // 顺序扫描AST，完成类型检查
+
+    // 用于记录扫描过的变量
+    std::unordered_map<std::string, PTO_BASE*> validVar;
+    // 用于记录扫描过的函数和class
+
+    // 先扫描全局变量
+    for (const auto& it : globalVariable) {
+        if (!it.second->type_check(validVar)) {
+            return false;
+        }
+    }
+
+    // 再扫描class或func
+    for (const auto& it : classOrFunc) {
+        if (!it->type_check(validVar)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 }

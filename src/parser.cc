@@ -330,7 +330,7 @@ static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& bu
 
     TSNode argumentList = ts_node_named_child(node, 1);
 
-    std::vector<pto_parser::PTO_EXPRESSION*> arguments;
+    std::vector<pto_parser::PTO_BASE*> arguments;
 
     for (uint32_t i = 0; i < ts_node_named_child_count(argumentList); ++i) {
         TSNode param = ts_node_named_child(argumentList, i);
@@ -1104,7 +1104,7 @@ pto_parser::PTO_MODULE* parse_input_file(const std::string& file, const bool& de
                 if (check_node_type(definition, "class_definition")) {
                     auto ptr = create_class_node(definition, buffer, importAlias);
                     ptr->add_decoration(decorator);
-                    ret->add_class(ptr);
+                    ret->add_class_or_func(ptr);
                 }
                 else {
                     unimplemented_error(definition, buffer);
