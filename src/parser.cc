@@ -271,6 +271,18 @@ static pto_parser::PTO_BINARY_OP* parse_binary_operator(TSNode node, const std::
             ts_node_start_point(ts_node_named_child(node, 1)).column
         ));
     }
+    else if (check_node_type(node, 1, "parenthesized_expression")) {
+        TSNode expr = ts_node_named_child(node, 1);
+        if (ts_node_named_child_count(expr) != 1) {
+            SPDLOG_ERROR("Unexpected Error");
+        }
+        else if (check_node_type(expr, 0, "binary_operator")) {
+            ret->set_rhs(parse_binary_operator(ts_node_named_child(expr, 0), buffer, importAlias));
+        }
+        else {
+            unimplemented_error(ts_node_named_child(expr, 0), buffer);    
+        }
+    }
     else {
         unimplemented_error(ts_node_named_child(node, 1), buffer);
     }
@@ -468,6 +480,18 @@ static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& bu
             }
 
         }
+        else if (check_node_type(param, "parenthesized_expression")) {
+            // 应当只有一个child
+            if (ts_node_named_child_count(param) != 1) {
+                SPDLOG_ERROR("Unexpected Error");
+            }
+            else if (check_node_type(param, 0, "binary_operator")) {
+                arguments.emplace_back(parse_binary_operator(ts_node_named_child(param, 0), buffer, importAlias));
+            }
+            else {
+                unimplemented_error(ts_node_named_child(param, 0), buffer);
+            }
+        }
         else if (check_node_type(param, "binary_operator")) {
             arguments.emplace_back(parse_binary_operator(param, buffer, importAlias));
         }
@@ -506,7 +530,7 @@ static pto_parser::PTO_ASSIGNMENT* create_assignment(TSNode node, const std::str
 
         // 对于左值的处理
         pto_parser::PTO_BASE *lhs = nullptr;
-        if (check_node_type(assign, 0, "pattern_list")) {
+        if (check_node_type(assign, 0, "pattern_list") || check_node_type(assign, 0, "tuple_pattern")) {
             // 处理为tuple var
             TSNode list = ts_node_named_child(assign, 0);
 
@@ -539,7 +563,7 @@ static pto_parser::PTO_ASSIGNMENT* create_assignment(TSNode node, const std::str
             );
         }
         else {
-            SPDLOG_ERROR("Process method for {} in assignment not implemented", ts_node_type(ts_node_named_child(assign, 0)));
+            SPDLOG_ERROR("Process method for {} in assignment at line {} is not implemented", ts_node_type(ts_node_named_child(assign, 0)), ts_node_start_point(node).row + 1);
             return nullptr;
         }
 
@@ -724,6 +748,20 @@ static pto_parser::PTO_ASSIGNMENT* create_typed_assignment(TSNode node, const st
             ts_node_start_point(ts_node_named_child(node, 2)).row + 1,
             ts_node_start_point(ts_node_named_child(node, 2)).column
         ));
+    } else if (check_node_type(node, 2, "parenthesized_expression")) {
+        // 应当只有一个named child
+        TSNode expression = ts_node_named_child(node, 2);
+        if (ts_node_named_child_count(expression) != 1) {
+            SPDLOG_ERROR("Unexpected Error");
+            return assignNode;
+        }
+
+        if (check_node_type(expression, 0, "binary_operator")) {
+            assignNode->set_value(parse_binary_operator(ts_node_named_child(expression, 0), buffer, importAlias));
+        }
+        else {
+            unimplemented_error(ts_node_named_child(expression, 0), buffer);    
+        }
     }
     else {
         unimplemented_error(ts_node_named_child(node, 2), buffer);
@@ -813,7 +851,27 @@ static std::vector<pto_parser::PTO_BASE*> parse_block_node(TSNode node, const st
         else if (check_node_type(statement, "if_statement")) {
             auto ptr = new pto_parser::PTO_IF(ts_node_start_point(statement).row + 1, ts_node_start_point(statement).column);
             // 第一个child是comparator
-            ptr->set_comparator(parse_comparison_operator(ts_node_named_child(statement, 0), buffer, importAlias));
+            // 可能会套多层parenthesized_expression
+            TSNode comp = ts_node_named_child(statement, 0);
+            while (!ts_node_is_null(comp)) {
+                if (check_node_type(comp, "comparison_operator")) {
+                    break;
+                }
+
+                if (!check_node_type(comp, "parenthesized_expression")) {
+                    SPDLOG_ERROR("Unexpected Error");
+                    break;
+                }
+
+                if (ts_node_named_child_count(comp) != 1) {
+                    SPDLOG_ERROR("Unexpected Error");
+                    break;
+                }
+
+                comp = ts_node_named_child(comp, 0);
+            }
+
+            ptr->set_comparator(parse_comparison_operator(comp, buffer, importAlias));
 
             // 第二个child是block
             ptr->add_if_statements(parse_block_node(ts_node_named_child(statement, 1), buffer, importAlias));
