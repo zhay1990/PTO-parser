@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ptoType.hh"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -42,7 +43,12 @@ public:
 
     virtual PTO_NODE_TYPE type() const = 0;
     virtual void dump(int depth, std::ofstream& fout) const = 0;
-    virtual bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar) = 0;
+
+    // 用于类型检查
+    virtual bool type_check(std::unordered_map<std::string, PTO_TYPE>&) {return true;};
+    virtual void infer_type(std::unordered_map<std::string, PTO_TYPE>&) {};
+    
+    PTO_TYPE& get_data_type() {return dataType;}
 
     virtual const std::string to_string() const {return "";}
 
@@ -53,6 +59,8 @@ public:
 protected:
     std::string decorator_;
     uint32_t row_, col_;
+
+    PTO_TYPE dataType;
 };
 
 class PTO_VARIABLE : public PTO_BASE {
@@ -61,26 +69,19 @@ public:
     ~PTO_VARIABLE() = default;
 
     PTO_NODE_TYPE type() const {
-        if (varType == "") return PTO_NODE_TYPE::VARIABLE;
-        else               return PTO_NODE_TYPE::TYPED_VARIABLE;
+        if (typeStr.size() == 0) return PTO_NODE_TYPE::VARIABLE;
+        else                     return PTO_NODE_TYPE::TYPED_VARIABLE;
     }
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void add_type_str(const std::string& str) {typeStr.emplace_back(str);}
 private:
     std::string varName;
-    
-    std::string varType;
-
-    // 数据类型
-    std::string dataType;
-
-    // 仅当类型是TENSOR时才生效的参数
-    std::vector<int> dimension;
-
     // 解析时临时存储，多个typeStr表明该变量是tuple
+    // 在当前处理的pyPTO文件里，tuple类型的变量都是函数调用时的赋值变量
     std::vector<std::string> typeStr;
 };
 
@@ -92,9 +93,12 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::TUPLE_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+    
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
+
+    const std::vector<PTO_BASE*>& get_var_list() const {return varList;}
 private:
     std::vector<PTO_BASE*> varList;
 };
@@ -107,9 +111,12 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::LIST_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
+
+    const std::vector<PTO_BASE*>& get_var_list() const {return varList;}
 private:
     std::vector<PTO_BASE*> varList;
 };
@@ -122,8 +129,10 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FLOAT_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+
+    const float& get_value() const {return value;}
 private:
     float value;
 };
@@ -136,8 +145,10 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::INT_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+
+    const int& get_value() const {return value;}
 private:
     int value;
 };
@@ -150,8 +161,10 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::BOOL_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+
+    const bool& get_value() const {return value;}
 private:
     bool value;
 };
@@ -171,7 +184,8 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::BINARY_OP;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void set_lhs (PTO_BASE *l) {lhs = l;}
     void set_rhs (PTO_BASE *r) {rhs = r;}
@@ -189,8 +203,8 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::INDEXED_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 private:
     std::string varName;
     // 这里给了拓展到多维的机会，但当前只处理tuple类型所以只有一个index
@@ -205,8 +219,8 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNC_CALL;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     
     void add_arguments(const std::vector<PTO_BASE*>& args) {arguments = args;}
 
@@ -225,31 +239,33 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::KEYWORD;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
 
-    
     void set_value(PTO_BASE* v) {value = v;}
+    
+    const std::string& get_keyword() const {return keyword;}
+    const PTO_BASE* get_value() const {return value;}
 private:
     std::string keyword;
     PTO_BASE* value;
-
 };
 
 class PTO_ASSIGNMENT : public PTO_BASE {
 public:
-    explicit PTO_ASSIGNMENT(PTO_VARIABLE* lhs, const uint32_t& row, const uint32_t& col);
+    explicit PTO_ASSIGNMENT(PTO_BASE* lhs, const uint32_t& row, const uint32_t& col);
     ~PTO_ASSIGNMENT();
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::ASSIGNMENT;}
     void dump(int depth, std::ofstream& fout) const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void set_value(PTO_BASE* v) {value = v;}
 
-    PTO_VARIABLE* get_lhs() const {return lhs;}
+    PTO_BASE* get_lhs() const {return lhs;}
+    PTO_BASE* get_value() const {return value;}
 
 private:
-    PTO_VARIABLE *lhs;
+    PTO_BASE *lhs;
     PTO_BASE *value; // 可以是string，int，function call等等
 };
 
@@ -260,7 +276,8 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::RETURN;}
     void dump(int depth, std::ofstream& fout) const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void add_value(PTO_BASE* v) {returnVal.emplace_back(v);}
 private:
@@ -274,7 +291,8 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FOR_LOOP;}
     void dump(int depth, std::ofstream& fout) const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void set_iterator(PTO_VARIABLE* it) {iter = it;}
     void set_call_info(PTO_CALL* c) {info = c;}
@@ -301,7 +319,8 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::IF;}
     void dump(int depth, std::ofstream& fout) const;
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void set_comparator(PTO_BINARY_OP *comp) {comparator = comp;}
     void add_if_statements(const std::vector<PTO_BASE*>& s) {ifStatement.insert(ifStatement.end(), s.begin(), s.end());}
@@ -319,7 +338,8 @@ public:
 
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNCTION;}
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_arguments(const std::vector<PTO_VARIABLE*>& arg) {arguments = arg;}
@@ -327,6 +347,7 @@ public:
     void add_statement(PTO_BASE* statement) {statements.emplace_back(statement);}
     void add_statement(const std::vector<PTO_BASE*>& s) {statements.insert(statements.end(), s.begin(), s.end());}
 
+    const std::string& get_func_name() const {return funcName;}
 private:
     std::string funcName;
     std::string decorate;
@@ -342,7 +363,8 @@ public:
 
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::CLASS;}
-    bool type_check(std::unordered_map<std::string, PTO_BASE*>& validVar);
+
+    bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_function_def(PTO_FUNC* ptr) {functions.emplace_back(ptr);}
