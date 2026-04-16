@@ -31,8 +31,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-
     // 死代码消除
+    if (!module->dead_code_eliminate()) {
+        delete module;
+        return 1;
+    }
     
     // 将优化过的代码输出到文件
     std::filesystem::path ptoFile = std::filesystem::path(options.output_dir) /

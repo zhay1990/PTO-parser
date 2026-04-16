@@ -47,7 +47,10 @@ public:
     // 用于类型检查
     virtual bool type_check(std::unordered_map<std::string, PTO_TYPE>&) {return true;};
     virtual void infer_type(std::unordered_map<std::string, PTO_TYPE>&) {};
-    
+
+    // 用于死代码消除
+    virtual bool get_callees(std::unordered_set<std::string>&) const {return true;}
+
     PTO_TYPE& get_data_type() {return dataType;}
 
     virtual const std::string to_string() const {return "";}
@@ -95,7 +98,8 @@ public:
     const std::string to_string() const;
     
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
-
+    bool get_callees(std::unordered_set<std::string>&) const;
+    
     void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
 
     const std::vector<PTO_BASE*>& get_var_list() const {return varList;}
@@ -113,6 +117,7 @@ public:
     const std::string to_string() const;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
 
@@ -186,6 +191,7 @@ public:
     const std::string to_string() const;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void set_lhs (PTO_BASE *l) {lhs = l;}
     void set_rhs (PTO_BASE *r) {rhs = r;}
@@ -221,7 +227,8 @@ public:
     const std::string to_string() const;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
-    
+    bool get_callees(std::unordered_set<std::string>&) const;
+
     void add_arguments(const std::vector<PTO_BASE*>& args) {arguments = args;}
 
     const std::string& get_func_name() const {return funcName;}
@@ -239,6 +246,8 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::KEYWORD;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void set_value(PTO_BASE* v) {value = v;}
     
@@ -258,6 +267,7 @@ public:
     void dump(int depth, std::ofstream& fout) const;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void set_value(PTO_BASE* v) {value = v;}
 
@@ -278,6 +288,7 @@ public:
     void dump(int depth, std::ofstream& fout) const;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void add_value(PTO_BASE* v) {returnVal.emplace_back(v);}
 private:
@@ -293,6 +304,7 @@ public:
     void dump(int depth, std::ofstream& fout) const;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void set_iterator(PTO_VARIABLE* it) {iter = it;}
     void set_call_info(PTO_CALL* c) {info = c;}
@@ -321,6 +333,7 @@ public:
     void dump(int depth, std::ofstream& fout) const;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void set_comparator(PTO_BINARY_OP *comp) {comparator = comp;}
     void add_if_statements(const std::vector<PTO_BASE*>& s) {ifStatement.insert(ifStatement.end(), s.begin(), s.end());}
@@ -340,6 +353,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNCTION;}
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool get_callees(std::unordered_set<std::string>&) const;
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_arguments(const std::vector<PTO_VARIABLE*>& arg) {arguments = arg;}
@@ -368,6 +382,8 @@ public:
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_function_def(PTO_FUNC* ptr) {functions.emplace_back(ptr);}
+
+    const std::vector<PTO_FUNC*>& get_functions() const {return functions;}
 private:
     std::string name;
     std::string decorate;
@@ -386,6 +402,8 @@ public:
     void add_class_or_func(PTO_BASE* c) {classOrFunc.emplace_back(c);};
 
     bool type_check() const;
+    
+    bool dead_code_eliminate();
 private:
     std::vector<PTO_BASE*> classOrFunc;
     std::unordered_map<std::string, PTO_ASSIGNMENT*> globalVariable;
