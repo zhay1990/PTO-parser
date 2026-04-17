@@ -62,20 +62,26 @@ static inline const std::string replace_import_alias(const std::string& in, cons
     return importMap.find(temp)->second + in.substr(index);
 }
 
-static inline void unimplemented_error(TSNode node, const std::string& buffer) {
-    if (ts_node_is_null(node)) return;
-
-    uint32_t start = ts_node_start_byte(node);
-    uint32_t end = ts_node_end_byte(node);
-    TSPoint point = ts_node_start_point(node);
-
-    // 提取并清理文本（去除换行符，限制长度）
-    std::string text = buffer.substr(start, end - start);
-    std::replace(text.begin(), text.end(), '\n', ' ');
-    if (text.length() > 40) text = text.substr(0, 37) + "...";
-
-    SPDLOG_ERROR("Process method for '{}' at line {} is not implemented.", text, point.row + 1);
-}
+// 为了是SPDLOG_ERROR能捕捉到错误的行号，这个函数被定义成宏
+#define UNIMPLEMENTED_ERROR(node, buffer)                                         \
+    do {                                                                          \
+        /* 使用局部变量缓存，防止传入含有副作用的表达式被多次求值 */                     \
+        auto _mac_node = (node);                                                  \
+        if (!ts_node_is_null(_mac_node)) {                                        \
+            uint32_t _mac_start = ts_node_start_byte(_mac_node);                  \
+            uint32_t _mac_end = ts_node_end_byte(_mac_node);                      \
+            TSPoint _mac_point = ts_node_start_point(_mac_node);                  \
+                                                                                  \
+            std::string _mac_text = (buffer).substr(_mac_start, _mac_end - _mac_start); \
+            std::replace(_mac_text.begin(), _mac_text.end(), '\n', ' ');          \
+            if (_mac_text.length() > 40) {                                        \
+                _mac_text = _mac_text.substr(0, 37) + "...";                      \
+            }                                                                     \
+                                                                                  \
+            SPDLOG_ERROR("Process method for '{}' at line {} is not implemented.", \
+                         _mac_text, _mac_point.row + 1);                          \
+        }                                                                         \
+    } while (0)
 
 extern "C" const TSLanguage* tree_sitter_python();
 
@@ -135,7 +141,7 @@ static void handle_import(TSNode node, const std::string& buffer, pto_parser::ST
     }
 
     // 其他模式待补充
-    unimplemented_error(node, buffer);
+    UNIMPLEMENTED_ERROR(node, buffer);
 }
 
 static pto_parser::PTO_BINARY_OP* parse_comparison_operator(TSNode node, const std::string& buffer, const pto_parser::STR_STR_MAP&) {
@@ -156,7 +162,7 @@ static pto_parser::PTO_BINARY_OP* parse_comparison_operator(TSNode node, const s
         ret = new pto_parser::PTO_BINARY_OP(pto_parser::PTO_OPERATOR::EQUAL, ts_node_start_point(node).row + 1, ts_node_start_point(node).column);
     }
     else {
-        unimplemented_error(ts_node_child(node, 1), buffer);
+        UNIMPLEMENTED_ERROR(ts_node_child(node, 1), buffer);
         return ret;
     }
 
@@ -169,7 +175,7 @@ static pto_parser::PTO_BINARY_OP* parse_comparison_operator(TSNode node, const s
         ));
     }
     else {
-        unimplemented_error(ts_node_named_child(node, 0), buffer);
+        UNIMPLEMENTED_ERROR(ts_node_named_child(node, 0), buffer);
     }
 
     // 处理rhs，目前看到以下几种情况
@@ -181,7 +187,7 @@ static pto_parser::PTO_BINARY_OP* parse_comparison_operator(TSNode node, const s
         ));
     }
     else {
-        unimplemented_error(ts_node_named_child(node, 1), buffer);
+        UNIMPLEMENTED_ERROR(ts_node_named_child(node, 1), buffer);
     }
 
     return ret;
@@ -214,7 +220,7 @@ static pto_parser::PTO_BINARY_OP* parse_binary_operator(TSNode node, const std::
         ret = new pto_parser::PTO_BINARY_OP(pto_parser::PTO_OPERATOR::ADD, ts_node_start_point(node).row + 1, ts_node_start_point(node).column);
     }
     else {
-        unimplemented_error(ts_node_child(node, 1), buffer);
+        UNIMPLEMENTED_ERROR(ts_node_child(node, 1), buffer);
         return ret;
     }
 
@@ -231,7 +237,7 @@ static pto_parser::PTO_BINARY_OP* parse_binary_operator(TSNode node, const std::
             ret->set_lhs(parse_binary_operator(ts_node_named_child(ts_node_named_child(node, 0), 0), buffer, importAlias));
         }
         else {
-            unimplemented_error(ts_node_named_child(ts_node_named_child(node, 0), 0), buffer);
+            UNIMPLEMENTED_ERROR(ts_node_named_child(ts_node_named_child(node, 0), 0), buffer);
             return ret;
         }
         
@@ -250,7 +256,7 @@ static pto_parser::PTO_BINARY_OP* parse_binary_operator(TSNode node, const std::
         ));
     }
     else {
-        unimplemented_error(ts_node_named_child(node, 0), buffer);
+        UNIMPLEMENTED_ERROR(ts_node_named_child(node, 0), buffer);
     }
 
     // 处理rhs，目前看到以下几种情况
@@ -280,11 +286,11 @@ static pto_parser::PTO_BINARY_OP* parse_binary_operator(TSNode node, const std::
             ret->set_rhs(parse_binary_operator(ts_node_named_child(expr, 0), buffer, importAlias));
         }
         else {
-            unimplemented_error(ts_node_named_child(expr, 0), buffer);    
+            UNIMPLEMENTED_ERROR(ts_node_named_child(expr, 0), buffer);    
         }
     }
     else {
-        unimplemented_error(ts_node_named_child(node, 1), buffer);
+        UNIMPLEMENTED_ERROR(ts_node_named_child(node, 1), buffer);
     }
 
     return ret;
@@ -316,7 +322,7 @@ static pto_parser::PTO_LIST_VAR* create_list_var(TSNode node, const std::string&
             ));
         }
         else {
-            unimplemented_error(node, buffer);
+            UNIMPLEMENTED_ERROR(node, buffer);
         }
     }
 
@@ -403,7 +409,7 @@ static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& bu
                         ));
                     }
                     else {
-                        unimplemented_error(val, buffer);
+                        UNIMPLEMENTED_ERROR(val, buffer);
                     }
                 }
                 variable->set_value(valPtr);
@@ -433,7 +439,7 @@ static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& bu
                 variable->set_value(create_list_var(val, buffer, importAlias));
             }
             else {
-                unimplemented_error(node, buffer);
+                UNIMPLEMENTED_ERROR(node, buffer);
             }
 
             arguments.emplace_back(variable);
@@ -489,14 +495,14 @@ static pto_parser::PTO_CALL* create_call_node(TSNode node, const std::string& bu
                 arguments.emplace_back(parse_binary_operator(ts_node_named_child(param, 0), buffer, importAlias));
             }
             else {
-                unimplemented_error(ts_node_named_child(param, 0), buffer);
+                UNIMPLEMENTED_ERROR(ts_node_named_child(param, 0), buffer);
             }
         }
         else if (check_node_type(param, "binary_operator")) {
             arguments.emplace_back(parse_binary_operator(param, buffer, importAlias));
         }
         else {
-            unimplemented_error(node, buffer);
+            UNIMPLEMENTED_ERROR(node, buffer);
         }
     }
 
@@ -582,7 +588,7 @@ static pto_parser::PTO_ASSIGNMENT* create_assignment(TSNode node, const std::str
             return ret;
         }
     }
-    unimplemented_error(node, buffer);
+    UNIMPLEMENTED_ERROR(node, buffer);
     return nullptr;
 }
 
@@ -609,7 +615,7 @@ static const std::string get_decorate_string(TSNode node, const std::string& buf
             delete ptr;
         }
         else {
-            unimplemented_error(node, buffer);
+            UNIMPLEMENTED_ERROR(node, buffer);
         }
     }
 
@@ -678,7 +684,7 @@ pto_parser::PTO_VARIABLE* create_type_variable(TSNode identifier, TSNode type, c
         
         // 类型当前只支持tuple
         if (func->get_func_name() != "pypto.language.Tuple") {
-            unimplemented_error(type, buffer);
+            UNIMPLEMENTED_ERROR(type, buffer);
         }
 
         // 拿到argument名字
@@ -689,7 +695,7 @@ pto_parser::PTO_VARIABLE* create_type_variable(TSNode identifier, TSNode type, c
         delete func;
     }
     else {
-        unimplemented_error(type, buffer);
+        UNIMPLEMENTED_ERROR(type, buffer);
     }
 
     return ret;
@@ -729,7 +735,7 @@ static pto_parser::PTO_ASSIGNMENT* create_typed_assignment(TSNode node, const st
         // 类似于ret[0]类型，需要记录index
         // 先只处理只有两个节点的case
         if (ts_node_named_child_count(ts_node_named_child(node, 2)) != 2 || !check_node_type(ts_node_named_child(node, 2), 0, "identifier") || !check_node_type(ts_node_named_child(node, 2), 1, "integer")) {
-            unimplemented_error(ts_node_named_child(node, 2), buffer);
+            UNIMPLEMENTED_ERROR(ts_node_named_child(node, 2), buffer);
         }
         assignNode->set_value(new pto_parser::PTO_INDEXED_VAR(
             get_node_text(ts_node_named_child(ts_node_named_child(node, 2), 0), buffer),
@@ -760,11 +766,11 @@ static pto_parser::PTO_ASSIGNMENT* create_typed_assignment(TSNode node, const st
             assignNode->set_value(parse_binary_operator(ts_node_named_child(expression, 0), buffer, importAlias));
         }
         else {
-            unimplemented_error(ts_node_named_child(expression, 0), buffer);    
+            UNIMPLEMENTED_ERROR(ts_node_named_child(expression, 0), buffer);    
         }
     }
     else {
-        unimplemented_error(ts_node_named_child(node, 2), buffer);
+        UNIMPLEMENTED_ERROR(ts_node_named_child(node, 2), buffer);
     }
 
     return assignNode;
@@ -812,7 +818,7 @@ static std::vector<pto_parser::PTO_BASE*> parse_block_node(TSNode node, const st
 
                 // 对于第一个pattern_list，只支持有两个节点的情况
                 if (ts_node_named_child_count(pattern_list) != 2 || !check_node_type(pattern_list, 0, "identifier") || !check_node_type(pattern_list, 1, "tuple_pattern")) {
-                    unimplemented_error(pattern_list, buffer);
+                    UNIMPLEMENTED_ERROR(pattern_list, buffer);
                 } else {
                     // 解析循环变量
                     ptr->set_iterator(new pto_parser::PTO_VARIABLE(
@@ -833,7 +839,7 @@ static std::vector<pto_parser::PTO_BASE*> parse_block_node(TSNode node, const st
                             ));
                         }
                         else {
-                            unimplemented_error(id, buffer);
+                            UNIMPLEMENTED_ERROR(id, buffer);
                         }
                     }
                 }
@@ -878,7 +884,7 @@ static std::vector<pto_parser::PTO_BASE*> parse_block_node(TSNode node, const st
 
             // 处理第三个child是else_clause的情况
             if (!check_node_type(statement, 2, "else_clause")) {
-                unimplemented_error(ts_node_named_child(statement, 2), buffer);
+                UNIMPLEMENTED_ERROR(ts_node_named_child(statement, 2), buffer);
             } else {
                 ptr->add_else_statements(parse_block_node(ts_node_named_child(ts_node_named_child(statement, 2), 0), buffer, importAlias));
             }
@@ -900,7 +906,7 @@ static std::vector<pto_parser::PTO_BASE*> parse_block_node(TSNode node, const st
                         ));
                     }
                     else {
-                        unimplemented_error(statement, buffer);
+                        UNIMPLEMENTED_ERROR(statement, buffer);
                     }
                 }
 
@@ -922,7 +928,7 @@ static std::vector<pto_parser::PTO_BASE*> parse_block_node(TSNode node, const st
             }
         }
         
-        unimplemented_error(statement, buffer);
+        UNIMPLEMENTED_ERROR(statement, buffer);
     }
 
     return ret;
@@ -993,7 +999,7 @@ static pto_parser::PTO_FUNC* create_func_node(TSNode node, const std::string& bu
             arguments.back()->add_type_str(typeStr);
         }
         else {
-            unimplemented_error(param, buffer);
+            UNIMPLEMENTED_ERROR(param, buffer);
         }
     }
 
@@ -1053,7 +1059,7 @@ static pto_parser::PTO_FUNC* create_func_node(TSNode node, const std::string& bu
             returnTypes.emplace_back(typeStr);
         }
         else {
-            unimplemented_error(type, buffer);
+            UNIMPLEMENTED_ERROR(type, buffer);
         }
 
         ret->add_return_type_str(returnTypes);
@@ -1105,11 +1111,11 @@ static pto_parser::PTO_CLASS* create_class_node(TSNode node, const std::string& 
                 ret->add_function_def(ptr);
             }
             else {
-                unimplemented_error(definition, buffer);
+                UNIMPLEMENTED_ERROR(definition, buffer);
             }
         }
         else {
-            unimplemented_error(content, buffer);
+            UNIMPLEMENTED_ERROR(content, buffer);
         }
     }
 
@@ -1204,13 +1210,13 @@ pto_parser::PTO_MODULE* parse_input_file(const std::string& file, const bool& de
                     ret->add_class_or_func(ptr);
                 }
                 else {
-                    unimplemented_error(definition, buffer);
+                    UNIMPLEMENTED_ERROR(definition, buffer);
                 }
 
             }
         } else {
             // 未知类型，需补充处理函数
-            unimplemented_error(node, buffer);
+            UNIMPLEMENTED_ERROR(node, buffer);
             ts_tree_cursor_delete(&cursor);
             delete ret;
             return nullptr;

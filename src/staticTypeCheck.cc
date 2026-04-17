@@ -199,8 +199,6 @@ static PTO_TYPE parse_type_str(const std::string& str, const STR_PTO_TYPE_MAP& v
 }
 
 void PTO_VARIABLE::infer_type(STR_PTO_TYPE_MAP& validVar) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     // 类型推导
     if (typeStr.size() == 0) {
         if (validVar.find(varName) != validVar.end()) {
@@ -224,8 +222,6 @@ void PTO_VARIABLE::infer_type(STR_PTO_TYPE_MAP& validVar) {
 }
 
 void PTO_TUPLE_VAR::infer_type(STR_PTO_TYPE_MAP& validVar) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     // 推导包含的参数的类型
     std::vector<PTO_TYPE> tupleType;
     for (const auto& ptr : varList) {
@@ -237,8 +233,6 @@ void PTO_TUPLE_VAR::infer_type(STR_PTO_TYPE_MAP& validVar) {
 }
 
 void PTO_LIST_VAR::infer_type(STR_PTO_TYPE_MAP& validVar) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     // 推导包含的参数的类型
     std::vector<PTO_TYPE> tupleType;
     for (const auto& ptr : varList) {
@@ -250,27 +244,19 @@ void PTO_LIST_VAR::infer_type(STR_PTO_TYPE_MAP& validVar) {
 }
 
 void PTO_FLOAT::infer_type(STR_PTO_TYPE_MAP&) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     dataType = PTO_TYPE(PTO_TYPE_KIND::CONST_FLOAT);
 }
 
 void PTO_INT::infer_type(STR_PTO_TYPE_MAP&) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     dataType = PTO_TYPE(PTO_TYPE_KIND::CONST_INT);
 }
 
 void PTO_BOOL::infer_type(STR_PTO_TYPE_MAP&) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     dataType = PTO_TYPE(PTO_TYPE_KIND::CONST_BOOL);
 }
 
 
 void PTO_BINARY_OP::infer_type(STR_PTO_TYPE_MAP& validVar) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     // 先推断lhs和rhs的类型
     lhs->infer_type(validVar);
     rhs->infer_type(validVar);
@@ -368,8 +354,6 @@ void PTO_BINARY_OP::infer_type(STR_PTO_TYPE_MAP& validVar) {
 }
 
 void PTO_INDEXED_VAR::infer_type(STR_PTO_TYPE_MAP& validVar) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     if (validVar.find(varName) == validVar.end()) {
         SPDLOG_ERROR("Undefinited variable {} at line {}", varName, row_);
         return;
@@ -398,8 +382,6 @@ void PTO_INDEXED_VAR::infer_type(STR_PTO_TYPE_MAP& validVar) {
 }
 
 void PTO_CALL::infer_type(STR_PTO_TYPE_MAP& validVar) {
-    if (dataType.kind != PTO_TYPE_KIND::UNKNOWN) return;
-
     // 对Intrinsic函数的处理
     if (funcName == "pypto.language.tensor.create") {
         // 应当有三组arguments
