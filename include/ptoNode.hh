@@ -36,6 +36,16 @@ enum class PTO_NODE_TYPE {
     BINARY_OP
 };
 
+struct DEAD_CODE_RET{
+    bool keepStatement;
+    bool modified;
+
+    DEAD_CODE_RET()
+        : keepStatement(true),
+          modified(false)
+    {}
+};
+
 class PTO_BASE {
 public:
     PTO_BASE(const uint32_t& row, const uint32_t& col);
@@ -44,12 +54,19 @@ public:
     virtual PTO_NODE_TYPE type() const = 0;
     virtual void dump(int depth, std::ofstream& fout) const = 0;
 
+    ///////////////////
     // 用于类型检查
+    ///////////////////
     virtual bool type_check(std::unordered_map<std::string, PTO_TYPE>&) {return true;};
     virtual void infer_type(std::unordered_map<std::string, PTO_TYPE>&) {};
 
+    ///////////////////
     // 用于死代码消除
+    ///////////////////
     virtual bool get_callees(std::unordered_set<std::string>&) const {return true;}
+    virtual bool add_to_live_map() const {return false;}
+    virtual const struct DEAD_CODE_RET eliminate_dead_code() {return DEAD_CODE_RET();}
+    // virtual void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const {}
 
     PTO_TYPE& get_data_type() {return dataType;}
 
@@ -79,8 +96,10 @@ public:
     const std::string to_string() const;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool add_to_live_map() const override;
 
     void add_type_str(const std::string& str) {typeStr.emplace_back(str);}
+    const std::vector<std::string>& get_type_str() const {return typeStr;}
 private:
     std::string varName;
     // 解析时临时存储，多个typeStr表明该变量是tuple
@@ -99,10 +118,14 @@ public:
     
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
-    
+    bool add_to_live_map() const override;
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
+
     void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
 
     const std::vector<PTO_BASE*>& get_var_list() const {return varList;}
+
+    // void delete_dead_code(const std::vector<int>& deleteList);
 private:
     std::vector<PTO_BASE*> varList;
 };
@@ -118,6 +141,8 @@ public:
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
+    bool add_to_live_map() const override;
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
 
     void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
 
@@ -192,6 +217,8 @@ public:
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
+    bool add_to_live_map() const override;
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
 
     void set_lhs (PTO_BASE *l) {lhs = l;}
     void set_rhs (PTO_BASE *r) {rhs = r;}
@@ -211,6 +238,7 @@ public:
     const std::string to_string() const;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
+    bool add_to_live_map() const override;
 private:
     std::string varName;
     // 这里给了拓展到多维的机会，但当前只处理tuple类型所以只有一个index
@@ -228,11 +256,14 @@ public:
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
-
+    bool add_to_live_map() const override;
+ 
     void add_arguments(const std::vector<PTO_BASE*>& args) {arguments = args;}
 
     const std::string& get_func_name() const {return funcName;}
     const std::vector<PTO_BASE*>& get_arguments() const {return arguments;}
+
+    // void delete_dead_code(const std::vector<int>& deleteList);
 private:
     std::string funcName;
     std::vector<PTO_BASE*> arguments;
@@ -248,7 +279,8 @@ public:
     const std::string to_string() const;
 
     bool get_callees(std::unordered_set<std::string>&) const;
-
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
+    
     void set_value(PTO_BASE* v) {value = v;}
     
     const std::string& get_keyword() const {return keyword;}
@@ -268,6 +300,10 @@ public:
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
+    bool add_to_live_map() const override;
+    const struct DEAD_CODE_RET eliminate_dead_code() override;
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
+
 
     void set_value(PTO_BASE* v) {value = v;}
 
@@ -287,10 +323,16 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::RETURN;}
     void dump(int depth, std::ofstream& fout) const;
 
+    bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
+    bool add_to_live_map() const override;
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
 
     void add_value(PTO_BASE* v) {returnVal.emplace_back(v);}
+    const std::vector<PTO_BASE*>& get_return_val() {return returnVal;}
+
+    // void delete_dead_code(const std::unordered_set<int>& requriedReturn);
 private:
     std::vector<PTO_BASE*> returnVal;
 };
@@ -305,6 +347,9 @@ public:
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
+    bool add_to_live_map() const override;
+    const struct DEAD_CODE_RET eliminate_dead_code() override;
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
 
     void set_iterator(PTO_VARIABLE* it) {iter = it;}
     void set_call_info(PTO_CALL* c) {info = c;}
@@ -334,7 +379,11 @@ public:
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
-
+    // void collect_required_return(std::unordered_map<std::string, struct LIVE_VARIABLE>&) const;
+    bool add_to_live_map() const override;
+    const struct DEAD_CODE_RET eliminate_dead_code() override;
+    
+    
     void set_comparator(PTO_BINARY_OP *comp) {comparator = comp;}
     void add_if_statements(const std::vector<PTO_BASE*>& s) {ifStatement.insert(ifStatement.end(), s.begin(), s.end());}
     void add_else_statements(const std::vector<PTO_BASE*>& s) {elseStatement.insert(elseStatement.end(), s.begin(), s.end());}
@@ -354,6 +403,8 @@ public:
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
+    const struct DEAD_CODE_RET eliminate_dead_code() override;
+
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_arguments(const std::vector<PTO_VARIABLE*>& arg) {arguments = arg;}
@@ -362,6 +413,7 @@ public:
     void add_statement(const std::vector<PTO_BASE*>& s) {statements.insert(statements.end(), s.begin(), s.end());}
 
     const std::string& get_func_name() const {return funcName;}
+    const std::vector<std::string>& get_return_type() const {return returnTypeStr;}
 private:
     std::string funcName;
     std::string decorate;

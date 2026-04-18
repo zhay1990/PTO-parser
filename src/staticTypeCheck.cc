@@ -4,6 +4,12 @@ namespace pto_parser{
 
 typedef std::unordered_map<std::string, PTO_TYPE> STR_PTO_TYPE_MAP;
 
+// 记录函数return类型，在进入函数时设置，在处理PTO_RETURN语句时检查
+static PTO_TYPE funcReturnType;
+
+// 记录for循环initVar类型，在进入for loop时设置，在处理yield语句时检查
+static std::vector<PTO_TYPE> forLoopInitType;
+
 // 辅助函数
 static bool add_var_to_map(PTO_BASE* var, STR_PTO_TYPE_MAP& validVar) {
     // 根据var的类型处理
@@ -978,6 +984,15 @@ void PTO_CALL::infer_type(STR_PTO_TYPE_MAP& validVar) {
             types.emplace_back(arg->get_data_type());
         }
         dataType = PTO_TYPE::make_tuple(types);
+
+        // 应当和记录的init var的类型相同
+        if (dataType != forLoopInitType.back()) {
+            SPDLOG_ERROR("Mismatched data type between yield statement at line {} and the init variable: {} vs {}",
+                row_,
+                dataType.to_string(),
+                forLoopInitType.back().to_string()
+            );
+        }
     }
     else if (funcName == "pypto.language.min") {
         // 应当只有两个arguments
@@ -1210,6 +1225,39 @@ bool PTO_ASSIGNMENT::type_check(STR_PTO_TYPE_MAP& validVar) {
     return true;
 }
 
+bool PTO_RETURN::type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) {
+    // 先推断自身的类型
+
+    std::vector<PTO_TYPE> temp;
+
+    for (const auto& r : returnVal) {
+        switch (r->type()) {
+            case PTO_NODE_TYPE::VARIABLE:
+            r->infer_type(validVar);
+            temp.emplace_back(r->get_data_type());
+            break;
+            default:
+            SPDLOG_ERROR("Unexpected non-variable for return statement at line {}", row_);
+            return false;
+        }
+    }
+
+    dataType = PTO_TYPE::make_tuple(temp);
+
+    if (funcReturnType.kind == PTO_TYPE_KIND::UNKNOWN) {
+        // 函数没有返回类型
+        funcReturnType = dataType;
+    } else if (dataType != funcReturnType) {
+        SPDLOG_ERROR("Mismatched type for return statement at line {}: {} vs {}",
+            row_,
+            dataType.to_string(),
+            funcReturnType.to_string()
+        );
+        return false;
+    }
+    return true;
+}
+
 void PTO_RETURN::infer_type(STR_PTO_TYPE_MAP& validVar) {
     // 当前假定return的都是变量名，后续是情况拓展
     std::vector<PTO_TYPE> ret;
@@ -1240,7 +1288,7 @@ bool PTO_FOR_LOOP::type_check(STR_PTO_TYPE_MAP& validVar) {
     iter->get_data_type().kind = PTO_TYPE_KIND::INT32;
     // 将iter存入table
     if (!add_var_to_map(iter, validVar)) return false;
-    // validVar[iter->to_string()] = iter;
+
 
     // 需要拿到初始化列表
     std::vector<std::string> initList;
@@ -1288,6 +1336,15 @@ bool PTO_FOR_LOOP::type_check(STR_PTO_TYPE_MAP& validVar) {
         if (!add_var_to_map(initVar[i], validVar)) 
             return false;
     }
+
+    // 记录initVar类型
+    std::vector<PTO_TYPE> temp;
+    for (const auto& v : initVar) {
+        temp.emplace_back(v->get_data_type());
+    }
+
+    // 即使只有一个变量，也记录为tuple
+    forLoopInitType.emplace_back(PTO_TYPE::make_tuple(temp));
     
     for (const auto& s : statements) {
         if (!s->type_check(validVar)) {
@@ -1295,74 +1352,7 @@ bool PTO_FOR_LOOP::type_check(STR_PTO_TYPE_MAP& validVar) {
         }
     }
 
-    // 强制要求最后一个statement是yield
-    if (statements.back()->type() != PTO_NODE_TYPE::ASSIGNMENT) {
-        SPDLOG_ERROR("The last statement (line {}) of for loop is requried to be pypto.language.yield_",
-            statements.back()->row()
-        );
-        return false;
-    }
-    auto ptr = (PTO_ASSIGNMENT*)statements.back();
-    if (ptr->get_value()->type() != PTO_NODE_TYPE::FUNC_CALL) {
-        SPDLOG_ERROR("The last statement (line {}) of for loop is requried to be pypto.language.yield_",
-            statements.back()->row()
-        );
-        return false;
-    }
-    auto funcPtr = (PTO_CALL*)(ptr->get_value());
-    if (funcPtr->get_func_name() != "pypto.language.yield_") {
-        SPDLOG_ERROR("The last statement (line {}) of for loop is requried to be pypto.language.yield_",
-            statements.back()->row()
-        );
-        return false;
-    }
-
-    if (ptr->get_lhs()->type() == PTO_NODE_TYPE::VARIABLE || ptr->get_lhs()->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
-        if (initVar.size() != 1) {
-            SPDLOG_ERROR("The number of variable in init list and yield is not matched at line {}: {} vs {}", row_, initVar.size(), 1);
-            return false;
-        }
-        if (ptr->get_lhs()->get_data_type() != initVar[0]->get_data_type()) {
-            SPDLOG_ERROR("Mismatched data type at line {} between {} and {}: {} vs {}",
-                row_,
-                ptr->get_lhs()->to_string(),
-                initVar[0]->to_string(),
-                ptr->get_lhs()->get_data_type().to_string(),
-                initVar[0]->get_data_type().to_string()
-            );
-            return false;
-        }
-    }
-    else if (ptr->get_lhs()->type() == PTO_NODE_TYPE::LIST_VARIABLE || ptr->get_lhs()->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
-        std::vector<PTO_BASE*> varList;
-        if (ptr->get_lhs()->type() == PTO_NODE_TYPE::LIST_VARIABLE) {
-            varList = ((PTO_LIST_VAR*)ptr->get_lhs())->get_var_list();
-        } else {
-            varList = ((PTO_TUPLE_VAR*)ptr->get_lhs())->get_var_list();
-        }
-
-        if (varList.size() != initVar.size()) {
-            SPDLOG_ERROR("The number of variable in init list and yield is not matched at line {}: {} vs {}", row_, initVar.size(), varList.size());
-            return false;
-        }
-
-        for (std::size_t i = 0; i < varList.size(); ++i) {
-            if (varList[i]->get_data_type() != initVar[i]->get_data_type()) {
-                SPDLOG_ERROR("Mismatched data type at line {} between {} and {}: {} vs {}",
-                    row_,
-                    varList[i]->to_string(),
-                    initVar[i]->to_string(),
-                    varList[i]->get_data_type().to_string(),
-                    initVar[i]->get_data_type().to_string()
-                );
-                return false;
-            }
-        }
-    }
-    else {
-        SPDLOG_ERROR("Unexpected Error");
-        return false;
-    }
+    forLoopInitType.pop_back();
 
 
     return true;
@@ -1408,89 +1398,25 @@ bool PTO_FUNC::type_check(STR_PTO_TYPE_MAP& validVar) {
         if (!add_var_to_map(ptr, validVar)) return false;
     }
 
-    // 内部语句类型检查
-    for (std::size_t i = 0; i < statements.size() - 1; ++ i) {
-        if (!statements[i]->type_check(validVar)) return false;
-    }
-
-    // 最后一个语句应当是return
-    if (statements.back()->type() != PTO_NODE_TYPE::RETURN) {
-        SPDLOG_ERROR("The last statement of one function must be return");
-        return false;
-    }
-    statements.back()->infer_type(validVar);
-
-    // 基于returnTypeStr解析出这个函数的return类型
+    // 基于returnTypeStr解析出这个函数的返回值
     if (returnTypeStr.size() == 0) {
-        dataType = statements.back()->get_data_type();
+        // 将返回类型设为UNKNOWN
+        funcReturnType.kind = PTO_TYPE_KIND::UNKNOWN;
     } else {
         std::vector<PTO_TYPE> temp;
         for (const auto& str : returnTypeStr) {
-            if (str.find("pypto.language.Tensor") == 0) {
-                // Tensor
-                std::string content = str.substr(str.find_first_of('[') + 1);
-                content.pop_back();
-
-                // 第一个应当是dimension
-                std::string dimension = content.substr(1, content.find_first_of(']') - 1);
-                content = content.substr(content.find_first_of(']') + 2);
-
-                std::vector<int> shape;
-                while (true) {
-                    size_t index = dimension.find_first_of(',');
-                    if (index == std::string::npos) {
-                        shape.emplace_back(std::stoi(dimension));
-                        break;
-                    } else {
-                        shape.emplace_back(std::stoi(dimension.substr(0, index)));
-                        dimension = dimension.substr(index + 1);
-                    }
-                }
-                // 第二个是数据类型
-                std::string tensorType = content;
-                if (content.find_first_of(',') == std::string::npos) {
-                    content = "";
-                } else {
-                    tensorType = content.substr(0, content.find_first_of(','));
-                    content = content.substr(content.find_first_of(',') + 1);
-                }
-
-                if (tensorType == "pypto.language.BF16") {
-                    temp.emplace_back(PTO_TYPE::make_tensor(shape, PTO_TYPE_KIND::BF16));
-                }
-                else if (tensorType == "pypto.language.FP32") {
-                    temp.emplace_back(PTO_TYPE::make_tensor(shape, PTO_TYPE_KIND::FP32));
-                }
-                else if (tensorType == "pypto.language.INT32") {
-                    temp.emplace_back(PTO_TYPE::make_tensor(shape, PTO_TYPE_KIND::INT32));
-                }
-                else {
-                    SPDLOG_ERROR("Unimplemented data type '{}'", tensorType);
-                }
-
-                if (content != "") {
-                    SPDLOG_ERROR("Unprocessed type '{}'", content);
-                }
-            }
-            else if (str == "pypto.language.Scalar[pypto.language.INDEX]") {
-                temp.emplace_back(PTO_TYPE::make_scalar(PTO_TYPE_KIND::INT32));
-            }
-            else {
-                SPDLOG_ERROR("Unprocessed data type {}", str);
-            }
+            temp.emplace_back(parse_type_str(str, validVar, row_));
         }
-        
-        this->dataType = PTO_TYPE::make_tuple(temp);
+
+        funcReturnType = PTO_TYPE::make_tuple(temp);
     }
 
-    if (this->dataType != statements.back()->get_data_type()) {
-        SPDLOG_ERROR("Mismatched return type for func {} at line {}, {} vs {}",
-            funcName,
-            row_,
-            this->dataType.to_string(),
-            statements.back()->get_data_type().to_string()
-        );
+    // 内部语句类型检查
+    for (std::size_t i = 0; i < statements.size(); ++ i) {
+        if (!statements[i]->type_check(validVar)) return false;
     }
+
+    this->dataType = funcReturnType;
 
     return true;
 }
