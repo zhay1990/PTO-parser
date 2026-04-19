@@ -53,6 +53,7 @@ public:
 
     virtual PTO_NODE_TYPE type() const = 0;
     virtual void dump(int depth, std::ofstream& fout) const = 0;
+    virtual void dump_to_pyTorch(int depth, std::ofstream& fout) const = 0;
 
     ///////////////////
     // 用于类型检查
@@ -95,6 +96,7 @@ public:
     }
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool add_to_live_map() const override;
@@ -117,6 +119,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::TUPLE_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
     
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
@@ -142,6 +145,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::LIST_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
@@ -165,6 +169,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FLOAT_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     void adjust_user_func_input() override {}
@@ -182,6 +187,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::INT_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     void adjust_user_func_input() override {}
@@ -199,6 +205,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::BOOL_CONSTANT;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     void adjust_user_func_input() override {}
@@ -223,6 +230,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::BINARY_OP;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
@@ -245,6 +253,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::INDEXED_VARIABLE;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool add_to_live_map() const override;
@@ -266,6 +275,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNC_CALL;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
@@ -292,6 +302,7 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::KEYWORD;}
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     bool get_callees(std::unordered_set<std::string>&) const;
     void adjust_user_func_input() override;
@@ -313,6 +324,7 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::ASSIGNMENT;}
     void dump(int depth, std::ofstream& fout) const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
@@ -338,6 +350,7 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::RETURN;}
     void dump(int depth, std::ofstream& fout) const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
@@ -360,6 +373,7 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FOR_LOOP;}
     void dump(int depth, std::ofstream& fout) const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
@@ -397,6 +411,7 @@ public:
 
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::IF;}
     void dump(int depth, std::ofstream& fout) const;
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
@@ -421,6 +436,7 @@ public:
 
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNCTION;}
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
@@ -451,6 +467,7 @@ public:
 
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::CLASS;}
+    void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
@@ -475,6 +492,7 @@ public:
     void add_global_variable(PTO_ASSIGNMENT* assign);
 
     void dump(int depth, std::ofstream& fout);
+    void dump_to_pyTorch(int depth, std::ofstream& fout);
 
     void add_class_or_func(PTO_BASE* c) {classOrFunc.emplace_back(c);};
 

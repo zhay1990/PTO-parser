@@ -10,6 +10,9 @@ static PTO_TYPE funcReturnType;
 // 记录for循环initVar类型，在进入for loop时设置，在处理yield语句时检查
 static std::vector<PTO_TYPE> forLoopInitType;
 
+// 记录函数的入参类型，在PTO_CALL中检查入参的类型
+static std::unordered_map<std::string, PTO_TYPE> funcInputType;
+
 // 辅助函数
 static bool add_var_to_map(PTO_BASE* var, STR_PTO_TYPE_MAP& validVar) {
     // 根据var的类型处理
@@ -1074,6 +1077,27 @@ void PTO_CALL::infer_type(STR_PTO_TYPE_MAP& validVar) {
     else if (funcName.substr(0, 5) == "self." && validVar.find(funcName.substr(5)) != validVar.end()) {
         // 当前只能处理self.xxx的用户定义函数调用
         this->dataType = validVar.find(funcName.substr(5))->second;
+
+        if (funcInputType.find(funcName.substr(5)) == funcInputType.end()) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+
+        std::vector<PTO_TYPE> argTypes;
+        for (const auto& arg : arguments) {
+            arg->infer_type(validVar);
+            argTypes.emplace_back(arg->get_data_type());
+        }
+
+        PTO_TYPE check = PTO_TYPE::make_tuple(argTypes);
+
+        if (check != funcInputType[funcName.substr(5)]) {
+            SPDLOG_ERROR("Mismatched type for the input arguments of the call at line {}: {} vs {}",
+                row_,
+                check.to_string(),
+                funcInputType[funcName.substr(5)].to_string()
+            );
+        }
     }
     else {
         SPDLOG_ERROR("Process method for function call '{}' is not implemented", funcName);
@@ -1386,6 +1410,8 @@ bool PTO_FUNC::type_check(STR_PTO_TYPE_MAP& validVar) {
         return false;
     }
 
+    std::vector<PTO_TYPE> tupleElement;
+
     // 推导arguments的类型
     for (const auto& ptr : arguments) {
         // 不处理self
@@ -1393,10 +1419,13 @@ bool PTO_FUNC::type_check(STR_PTO_TYPE_MAP& validVar) {
             continue;
 
         ptr->infer_type(validVar);
+        tupleElement.emplace_back(ptr->get_data_type());
 
         // local变量名直接覆盖全局变量
         if (!add_var_to_map(ptr, validVar)) return false;
     }
+
+    funcInputType[funcName] = PTO_TYPE::make_tuple(tupleElement);
 
     // 基于returnTypeStr解析出这个函数的返回值
     if (returnTypeStr.size() == 0) {

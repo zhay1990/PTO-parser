@@ -81,6 +81,22 @@ int main(int argc, char** argv) {
 
     fout.close();
 
+    // 输出一份pytorch文件
+    std::filesystem::path torchFile = std::filesystem::path(options.output_dir) /
+                                    (std::filesystem::path(options.input_file).stem().string() + "_torch.py");
+    
+    std::ofstream foutTorch(torchFile, std::ios::out);
+
+    if (!foutTorch.is_open()) {
+        SPDLOG_ERROR("Failed to open file: {}", torchFile.string());
+        delete module;
+        return 1;
+    }
+
+    module->dump_to_pyTorch(0, foutTorch);
+
+    foutTorch.close();
+
     // Clean up
     delete module;
     SPDLOG_INFO("Clean up succeffully. Exited.");

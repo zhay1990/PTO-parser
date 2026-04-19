@@ -369,6 +369,9 @@ bool PTO_FOR_LOOP::add_to_live_map() const {
             varAdded |= statements[i]->add_to_live_map();
         }
 
+        // 注意 info里的第一个变量也是需要的
+        info->get_arguments()[0]->add_to_live_map();
+
         if (!varAdded) break;
 
         ret = true;
