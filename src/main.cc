@@ -33,6 +33,24 @@ int main(int argc, char** argv) {
 
     SPDLOG_INFO("Static type check completed!");
 
+    // 在进行死代码消除前，将for循环中的初始变量和yield语句拆成单独的assignment语句
+    // 这是因为yield语句会导致函数调用时的循环依赖，即
+    // for xxx, (A, B) in pl.range(20, init_values(xxx, xxx)):
+    //     ret = self.xxx(A, B)
+    //     C = ret[0]
+    //     D = ret[1]
+    //     E, F = pl.yield_(C, D)
+    // 然后self.xxx中A只用来生成C
+    // 在这种情况下，即使后续没有使用E，我们也无法消除E
+    // 因为A是函数需要的，导致E一定要存在
+    // 为了处理这种情况，我们将yield和init value拆成多个assignment语句
+    if (!module->remove_yield()) {
+        delete module;
+        return 1;
+    }
+
+    SPDLOG_INFO("Yield statements are replaced by assignment.");
+
     // 死代码消除
     if (!module->dead_code_eliminate()) {
         delete module;
@@ -40,6 +58,12 @@ int main(int argc, char** argv) {
     }
 
     SPDLOG_INFO("Dead code eliminate completed");
+
+    // 做一次静态检查
+    if (!module->type_check()) {
+        delete module;
+        return 1;
+    }
     
     // 将优化过的代码输出到文件
     std::filesystem::path ptoFile = std::filesystem::path(options.output_dir) /
