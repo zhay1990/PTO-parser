@@ -782,6 +782,10 @@ const struct DEAD_CODE_RET PTO_ASSIGNMENT::eliminate_dead_code() {
         if (curLiveMap.find(lhs->to_string()) == curLiveMap.end()) {
             ret.keepStatement = false;
         }
+        else if (value->type() == PTO_NODE_TYPE::VARIABLE && lhs->to_string() == value->to_string()) {
+            // A = A的无意义赋值
+            ret.keepStatement = false;
+        }
     }
     else {
         SPDLOG_ERROR("Non-SSA assignment at line {}", row_);

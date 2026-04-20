@@ -51,13 +51,21 @@ int main(int argc, char** argv) {
 
     SPDLOG_INFO("Yield statements are replaced by assignment.");
 
-    // 死代码消除
-    if (!module->dead_code_eliminate()) {
-        delete module;
-        return 1;
+    while (true) {
+        // 死代码消除
+        if (!module->dead_code_eliminate()) {
+            delete module;
+            return 1;
+        }
+
+        // 消除等价的变量，如A = B，C = A, 则A,B,C这三个变量是等价的
+        // 该函数返回值表示是否有等价variable被合并
+        if (!module->alias_coalasce()) {
+            break;
+        }
     }
 
-    SPDLOG_INFO("Dead code eliminate completed");
+    SPDLOG_INFO("Code optimization completed!");
 
     // 做一次静态检查
     if (!module->type_check()) {

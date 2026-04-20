@@ -65,6 +65,8 @@ public:
     // 用于死代码消除
     ///////////////////
     virtual bool remove_yield() {return true;}
+    virtual bool alias_coalasce() {return false;}
+    virtual void build_alias_union() const {}
     virtual bool get_callees(std::unordered_set<std::string>&) const {return true;}
     virtual bool add_to_live_map() const {return false;}
     virtual const struct DEAD_CODE_RET eliminate_dead_code() {return DEAD_CODE_RET();}
@@ -101,6 +103,7 @@ public:
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool add_to_live_map() const override;
     void adjust_user_func_input() override;
+    bool alias_coalasce() override;
 
     void add_type_str(const std::string& str) {typeStr.emplace_back(str);}
     const std::vector<std::string>& get_type_str() const {return typeStr;}
@@ -125,6 +128,7 @@ public:
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     void adjust_user_func_input() override;
+    bool alias_coalasce() override;
 
     void remove_variable(const std::vector<int>&);
     void clear();
@@ -151,6 +155,7 @@ public:
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     void adjust_user_func_input() override;
+    bool alias_coalasce() override;
 
     void remove_variable(const std::vector<int>&);
 
@@ -236,6 +241,7 @@ public:
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     void adjust_user_func_input() override;
+    bool alias_coalasce() override;
 
     void set_lhs (PTO_BASE *l) {lhs = l;}
     void set_rhs (PTO_BASE *r) {rhs = r;}
@@ -258,6 +264,7 @@ public:
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool add_to_live_map() const override;
     void adjust_user_func_input() override;
+    bool alias_coalasce() override;
 
     const std::string& get_var_name() const {return varName;}
     const std::vector<int>& get_index() const {return index;}
@@ -281,6 +288,7 @@ public:
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     void adjust_user_func_input() override;
+    bool alias_coalasce() override;
 
     void remove_variable(const std::vector<int>&);
 
@@ -307,6 +315,7 @@ public:
     bool get_callees(std::unordered_set<std::string>&) const;
     void adjust_user_func_input() override;
     void remove_variable(const std::vector<int>&);
+    bool alias_coalasce() override;
     
     void set_value(PTO_BASE* v) {value = v;}
     
@@ -328,6 +337,8 @@ public:
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
+    bool alias_coalasce() override;
+    void build_alias_union() const override;
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
@@ -352,6 +363,7 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
 
+    bool alias_coalasce() override;
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
@@ -378,6 +390,8 @@ public:
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     bool remove_yield() override;
+    bool alias_coalasce() override;
+    void build_alias_union() const override;
     void remove_init_var();
 
     bool get_callees(std::unordered_set<std::string>&) const;
@@ -415,6 +429,8 @@ public:
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
+    bool alias_coalasce() override;
+    void build_alias_union() const override;
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
@@ -440,6 +456,7 @@ public:
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
+    bool alias_coalasce() override;
     bool get_callees(std::unordered_set<std::string>&) const;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
     void adjust_user_func_input() override;
@@ -475,6 +492,7 @@ public:
     void add_function_def(PTO_FUNC* ptr) {functions.emplace_back(ptr);}
 
     bool remove_yield() override;
+    bool alias_coalasce() override;
     void adjust_user_func_input() override {}
 
     const std::vector<PTO_FUNC*>& get_functions() const {return functions;}
@@ -499,6 +517,7 @@ public:
     bool type_check() const;
 
     bool remove_yield() const;
+    bool alias_coalasce() const;
     
     bool dead_code_eliminate();
 private:

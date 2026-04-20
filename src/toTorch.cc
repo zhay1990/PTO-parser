@@ -246,6 +246,10 @@ void PTO_CALL::dump_to_pyTorch(int depth, std::ofstream& fout) const {
     }
     else if (funcName == "pypto.language.tensor.read") {
         arguments[0]->dump_to_pyTorch(0, fout);
+        if (arguments[1]->type() != PTO_NODE_TYPE::LIST_VARIABLE) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
         arguments[1]->dump_to_pyTorch(0, fout);
         return;
     }
@@ -348,16 +352,19 @@ void PTO_ASSIGNMENT::dump_to_pyTorch(int depth, std::ofstream& fout) const {
     std::string indent(depth, '\t');
     fout << indent;
     lhs->dump_to_pyTorch(0, fout); // 不写类型
-    fout << " = ";
 
     if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.tensor.assemble") {
-        // 这个函数特殊处理，需要拆成两个assignment
+        // 这个函数特殊处理，如果第一个argument和lhs不是同一个变量，则需要拆成两个assignment
         const auto& args = ((PTO_CALL*)value)->get_arguments();
-        args[0]->dump_to_pyTorch(0, fout);
-        fout << std::endl << indent;
-        lhs->dump_to_pyTorch(0, fout);
 
-        fout << "[";
+        if (args[0]->to_string() != lhs->to_string()) {
+            fout << " = ";
+            args[0]->dump_to_pyTorch(0, fout);
+            fout << std::endl << indent;
+            lhs->dump_to_pyTorch(0, fout);
+        }
+
+        fout << " [";
 
         std::vector<PTO_BASE*> varList;
         if (args[2]->type() == PTO_NODE_TYPE::LIST_VARIABLE) {
@@ -383,10 +390,8 @@ void PTO_ASSIGNMENT::dump_to_pyTorch(int depth, std::ofstream& fout) const {
         fout << "] = ";
         args[1]->dump_to_pyTorch(0, fout);
     }
-
-    
     else {
-
+        fout << " = ";
         value->dump_to_pyTorch(0, fout);
     }
 

@@ -336,6 +336,7 @@ void PTO_ASSIGNMENT::dump(int depth, std::ofstream& fout) const {
     if (value != nullptr) {
         value->dump(0, fout);
     }
+    fout << std::endl;
 }
 
 // ==========================================
@@ -362,6 +363,7 @@ void PTO_RETURN::dump(int depth, std::ofstream& fout) const {
             returnVal[i]->dump(0, fout);
         }
     }
+    fout << std::endl;
 }
 
 
@@ -409,7 +411,6 @@ void PTO_FOR_LOOP::dump(int depth, std::ofstream& fout) const {
 
     for (const auto& ptr : statements) {
         ptr->dump(depth + 1, fout);
-        fout << std::endl;
     }
 }
 
@@ -440,14 +441,12 @@ void PTO_IF::dump(int depth, std::ofstream& fout) const {
     fout << "):" << std::endl;
     for (const auto& ptr : ifStatement) {
         ptr->dump(depth + 1, fout);
-        fout << std::endl;
     }
     if (elseStatement.size() != 0) {
         fout << indent << "else:" << std::endl;
     }
     for (const auto& ptr : elseStatement) {
         ptr->dump(depth + 1, fout);
-        fout << std::endl;
     }
 }
 
@@ -499,8 +498,8 @@ void PTO_FUNC::dump(int depth, std::ofstream& fout) const {
 
     for (const auto& ptr : statements){
         ptr->dump(depth + 1, fout);
-        fout << std::endl;
     }
+    fout << std::endl;
 }
 
 PTO_CLASS::PTO_CLASS(const std::string& n, const uint32_t& r, const uint32_t& c)
