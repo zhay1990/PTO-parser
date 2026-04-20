@@ -65,6 +65,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 将host函数内的parallel statement里的部分赋值语句移动到外面
+    module->optimize_parallel_loop();
+
     SPDLOG_INFO("Code optimization completed!");
 
     // 做一次静态检查
@@ -89,6 +92,7 @@ int main(int argc, char** argv) {
 
     fout.close();
 
+    SPDLOG_INFO("Convert to pyTorch ...");
     // 输出一份pytorch文件
     std::filesystem::path torchFile = std::filesystem::path(options.output_dir) /
                                     (std::filesystem::path(options.input_file).stem().string() + "_torch.py");
@@ -104,6 +108,13 @@ int main(int argc, char** argv) {
     module->dump_to_pyTorch(0, foutTorch);
 
     foutTorch.close();
+
+    SPDLOG_INFO("Convert to Triton ...");
+    // 转换成triton文件
+    std::filesystem::path tritonFile = std::filesystem::path(options.output_dir) /
+                                     (std::filesystem::path(options.input_file).stem().string() + "_triton.py");
+
+    module->convert_to_triton(tritonFile.string());
 
     // Clean up
     delete module;

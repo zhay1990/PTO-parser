@@ -72,6 +72,9 @@ public:
     virtual const struct DEAD_CODE_RET eliminate_dead_code() {return DEAD_CODE_RET();}
     virtual void adjust_user_func_input() = 0;
 
+    virtual void optimize_parallel_loop() {}
+    virtual void determine_program_id_for_triton_kernel() const {}
+
     PTO_TYPE& get_data_type() {return dataType;}
 
     virtual const std::string to_string() const {return "";}
@@ -394,6 +397,9 @@ public:
     void build_alias_union() const override;
     void remove_init_var();
 
+    void optimize_parallel_loop() override;
+    void determine_program_id_for_triton_kernel() const override;
+
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
@@ -411,6 +417,7 @@ public:
 
     const std::vector<PTO_VARIABLE*>& get_init_var() const {return initVar;}
     PTO_CALL* get_info() const {return info;}
+    std::vector<PTO_BASE*>& get_statements() {return statements;}
 private:
     PTO_VARIABLE *iter;
     std::vector<PTO_VARIABLE*> initVar;
@@ -435,6 +442,9 @@ public:
     bool add_to_live_map() const override;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
     void adjust_user_func_input() override;
+
+    void optimize_parallel_loop() override;
+    void determine_program_id_for_triton_kernel() const override;
     
     void set_comparator(PTO_BINARY_OP *comp) {comparator = comp;}
     void add_if_statements(const std::vector<PTO_BASE*>& s) {ifStatement.insert(ifStatement.end(), s.begin(), s.end());}
@@ -469,6 +479,10 @@ public:
 
     const std::string& get_func_name() const {return funcName;}
     const std::vector<std::string>& get_return_type() const {return returnTypeStr;}
+    const std::string& get_decorate() const {return decorate;}
+
+    void optimize_parallel_loop() override;
+    void determine_program_id_for_triton_kernel() const override;
 private:
     std::string funcName;
     std::string decorate;
@@ -485,6 +499,7 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::CLASS;}
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton(const std::string& fileName) const;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
@@ -493,6 +508,7 @@ public:
 
     bool remove_yield() override;
     bool alias_coalasce() override;
+    void optimize_parallel_loop() override;
     void adjust_user_func_input() override {}
 
     const std::vector<PTO_FUNC*>& get_functions() const {return functions;}
@@ -511,6 +527,7 @@ public:
 
     void dump(int depth, std::ofstream& fout);
     void dump_to_pyTorch(int depth, std::ofstream& fout);
+    void convert_to_triton(const std::string& fileName) const;
 
     void add_class_or_func(PTO_BASE* c) {classOrFunc.emplace_back(c);};
 
@@ -518,6 +535,7 @@ public:
 
     bool remove_yield() const;
     bool alias_coalasce() const;
+    void optimize_parallel_loop() const;
     
     bool dead_code_eliminate();
 private:

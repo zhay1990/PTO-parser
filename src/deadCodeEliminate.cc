@@ -1146,4 +1146,149 @@ void PTO_RETURN::adjust_user_func_input() {
     }
 }
 
+void PTO_MODULE::optimize_parallel_loop() const {
+    // 简化处理，假设一个文件只有一个class
+    if (classOrFunc.size() != 1 || classOrFunc[0]->type() != PTO_NODE_TYPE::CLASS) {
+        SPDLOG_ERROR("Only support one class in one file");
+        return;
+    }
+
+    ((PTO_CLASS*)classOrFunc[0])->optimize_parallel_loop();
+}
+
+void PTO_CLASS::optimize_parallel_loop() {
+    // 找到host函数
+    // 寻找到host函数，现在假定只有一个host函数
+    PTO_FUNC *ptr = nullptr;
+
+    for (const auto& func : functions) {
+        if (func->get_decorate() == "pypto.language.function(type = pypto.language.FunctionType.Orchestration)") {
+            if (ptr != nullptr) {
+                SPDLOG_ERROR("More than one host function is founded, which is not supported");
+                return;
+            }
+            ptr = func;
+        }
+    }
+
+    // 扫描host函数，分析parallel loop的行为
+    ptr->optimize_parallel_loop();
+}
+
+static void extract_parallel_assign(PTO_BASE* ptr, std::vector<PTO_BASE*>& statements) {
+    // 只处理parallel
+    if (ptr->type() != PTO_NODE_TYPE::FOR_LOOP) {
+        return;
+    }
+
+    PTO_FOR_LOOP *forPtr = (PTO_FOR_LOOP*)ptr;
+    if (forPtr->get_info()->get_func_name() != "pypto.language.parallel") {
+        return;
+    }
+
+    // 只处理以下这种情况，这个parallel loop的第一个statement是kernel函数调用
+    // 剩余的语句都是赋值，且赋值的rhs是kernel函数的返回变量
+    auto& innerState = forPtr->get_statements();
+
+    if (innerState[0]->type() != PTO_NODE_TYPE::ASSIGNMENT) {
+        return;
+    }
+    if (((PTO_ASSIGNMENT*)innerState[0])->get_value()->type() != PTO_NODE_TYPE::FUNC_CALL) {
+        return;
+    }
+    // 这里假定class里只有一个host函数，其他都是kernel函数
+    if (((PTO_CALL*)((PTO_ASSIGNMENT*)innerState[0])->get_value())->get_func_name().substr(0, 5) != "self.") {
+        return;
+    }
+
+    // kernel函数的返回变量名
+    std::string kernelRet = ((PTO_ASSIGNMENT*)innerState[0])->get_lhs()->to_string();
+
+    for (std::size_t i = 1; i < innerState.size(); ++i) {
+        if (innerState[i]->type() != PTO_NODE_TYPE::ASSIGNMENT) {
+            return;
+        }
+
+        // 右侧必须是变量
+        PTO_ASSIGNMENT* tempPtr = (PTO_ASSIGNMENT*)innerState[i];
+
+        if (tempPtr->get_value()->type() == PTO_NODE_TYPE::VARIABLE) {
+            if (tempPtr->get_value()->to_string() != kernelRet) {
+                return;
+            }
+        }
+        else if (tempPtr->get_value()->type() == PTO_NODE_TYPE::INDEXED_VARIABLE) {
+            if (((PTO_INDEXED_VAR*)tempPtr->get_value())->get_var_name() != kernelRet) {
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+
+    // 可以move出来
+    for (std::size_t i = 1; i < innerState.size(); ++ i) {
+        SPDLOG_DEBUG("Move assignment at line {} out of parallel loop", innerState[i]->row());
+        statements.emplace_back(innerState[i]);
+    }
+
+    while (innerState.size() > 1) {
+        innerState.pop_back();
+    }
+}
+
+void PTO_FUNC::optimize_parallel_loop() {
+    std::vector<PTO_BASE*> newStatements;
+
+    for (auto& ptr : statements) {
+        ptr->optimize_parallel_loop();
+
+        newStatements.emplace_back(ptr);
+
+        extract_parallel_assign(ptr, newStatements);
+    }
+
+    statements = newStatements;
+}
+
+void PTO_FOR_LOOP::optimize_parallel_loop() {
+    std::vector<PTO_BASE*> newStatements;
+
+    for (auto& ptr : statements) {
+        ptr->optimize_parallel_loop();
+
+        newStatements.emplace_back(ptr);
+
+        extract_parallel_assign(ptr, newStatements);
+    }
+
+    statements = newStatements;
+}
+
+void PTO_IF::optimize_parallel_loop() {
+    std::vector<PTO_BASE*> newStatements;
+
+    for (auto& ptr : ifStatement) {
+        ptr->optimize_parallel_loop();
+
+        newStatements.emplace_back(ptr);
+
+        extract_parallel_assign(ptr, newStatements);
+    }
+
+    ifStatement = newStatements;
+
+    newStatements.clear();
+
+    for (auto& ptr : elseStatement) {
+        ptr->optimize_parallel_loop();
+
+        newStatements.emplace_back(ptr);
+
+        extract_parallel_assign(ptr, newStatements);
+    }
+
+    elseStatement = newStatements;
+}
+
 }
