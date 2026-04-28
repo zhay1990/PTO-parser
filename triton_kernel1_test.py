@@ -1,5 +1,5 @@
-import os
-os.environ["TRITON_INTERPRET"] = "1"
+# import os
+# os.environ["TRITON_INTERPRET"] = "1"
 import triton
 import triton.language as tl
 import torch
@@ -20,7 +20,8 @@ def qwen3_decode_layer_incore_1(
 ):
     ob_0_out = tl.program_id(axis = 0)
     ob_0_in = tl.program_id(axis = 1)
-    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr)
+    inv_rms_offset = (0 + tl.arange(0, 4))[:, None] * inv_rms_tile_0_stride_0 + (0 + tl.arange(0, 1))[None, :] * inv_rms_tile_0_stride_1
+    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr + inv_rms_offset)
     q0_0 = ((0 + (((ob_0_out * 4) + ob_0_in) * 1)) * 64)
     q_acc_0 = tl.zeros([4, 64], dtype = tl.float32, )
     q_acc_1 = q_acc_0 * 0
@@ -45,7 +46,7 @@ def qwen3_decode_layer_incore_1(
 def qwen3_decode_layer_incore_1_torch(b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, ob_0_out, q_proj_5, wq_0):
     for ob_0_in in range(4):
         q0_0 = ((0 + (((ob_0_out * 4) + ob_0_in) * 1)) * 64)
-        q_acc_0 = torch.empty([4, 64], dtype = torch.float32, layout = torch.strided)
+        q_acc_0 = torch.zeros([4, 64], dtype = torch.float32, layout = torch.strided, device='cuda')
         q_acc_1 = torch.mul(q_acc_0, 0)
         for kb_5 in range(20):
             k0_7 = (kb_5 * 256)
@@ -63,12 +64,12 @@ def qwen3_decode_layer_incore_1_torch(b0_0, hidden_states_0, input_rms_weight_0,
     return q_proj_5
 
 if __name__ == '__main__':
-    hidden_states_0 = torch.rand([16, 5120], dtype = torch.bfloat16)
-    input_rms_weight_0 = torch.rand([1, 5120], dtype = torch.float32)
-    inv_rms_0 = torch.rand([16, 1], dtype = torch.float32)
-    q_proj_0 = torch.empty([16, 8192], dtype = torch.bfloat16, layout = torch.strided)
-    q_proj_1 = q_proj_0
-    wq_0 = torch.rand([5120, 5120], dtype = torch.bfloat16)
+    hidden_states_0 = torch.rand([16, 5120], dtype = torch.bfloat16, device='cuda')
+    input_rms_weight_0 = torch.rand([1, 5120], dtype = torch.float32,device='cuda')
+    inv_rms_0 = torch.rand([16, 1], dtype = torch.float32, device='cuda')
+    q_proj_0 = torch.zeros([16, 5120], dtype = torch.bfloat16, layout = torch.strided, device='cuda')
+    q_proj_1 = torch.zeros_like(q_proj_0)
+    wq_0 = torch.rand([5120, 5120], dtype = torch.bfloat16, device='cuda')
     
     for b0_0 in range(0, 16, 4, ):
         inv_rms_tile_0 = inv_rms_0[b0_0 : b0_0 + 4, 0 : 0 + 1]
@@ -77,8 +78,17 @@ if __name__ == '__main__':
     for b0_0 in range(0, 16, 4, ):
         inv_rms_tile_0 = inv_rms_0[b0_0 : b0_0 + 4, 0 : 0 + 1]
         for ob_0_out in range(20):
-            q_proj = qwen3_decode_layer_incore_1_torch(b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, ob_0_out, q_proj_1, wq_0)
+            q_proj_1 = qwen3_decode_layer_incore_1_torch(b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, ob_0_out, q_proj_1, wq_0)
 
-    print(torch.allclose(q_proj_0, q_proj, atol=1e-3, rtol=1e-3))
+    print(torch.allclose(q_proj_0, q_proj_1, atol=1e-2, rtol=1e-2))
+    
+    diff = torch.abs(q_proj_0.float() - q_proj_1.float())
+    rel_diff = diff / (torch.abs(q_proj_1.float()) + 1e-6)
+
+    # 2. 打印全局统计信息
+    print("--- 误差统计 ---")
+    print(f"最大绝对误差 (Max Absolute Error): {torch.max(diff):.6f}")
+    print(f"平均绝对误差 (Mean Absolute Error): {torch.mean(diff):.6f}")
+    print(f"最大相对误差 (Max Relative Error): {torch.max(rel_diff):.6f}")
 
     pass

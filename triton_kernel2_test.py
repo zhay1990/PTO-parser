@@ -24,7 +24,8 @@ def qwen3_decode_layer_incore_2(
 ):
     ob_1_out = tl.program_id(axis = 0)
     ob_1_in = tl.program_id(axis = 1)
-    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr)
+    inv_rms_offset = (tl.arange(0, 4))[:, None] * inv_rms_tile_0_stride_0
+    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr + inv_rms_offset)
     kv0_0 = ((0 + (((ob_1_out * 8) + ob_1_in) * 1)) * 32)
     k_acc_0 = tl.zeros([4, 32], dtype = tl.float32, )
     v_acc_0 = tl.zeros([4, 32], dtype = tl.float32, )
@@ -86,11 +87,11 @@ if __name__ == '__main__':
     hidden_states_0 = torch.rand([16, 5120], dtype = torch.bfloat16)
     input_rms_weight_0 = torch.rand([1, 5120], dtype = torch.float32)
     inv_rms_0 = torch.rand([4, 1], dtype = torch.float32)
+    
     k_proj_0 = torch.empty([16, 1024], dtype = torch.bfloat16, layout = torch.strided)
     v_proj_0 = torch.empty([16, 1024], dtype = torch.bfloat16, layout = torch.strided)
-
-    k_proj_1 = k_proj_0
-    v_proj_1 = v_proj_0
+    k_proj_1 = torch.empty_like(k_proj_0)
+    v_proj_1 = torch.empty_like(v_proj_0)
 
     wq_0 = torch.rand([5120, 5120], dtype = torch.bfloat16)
     wk_0 = torch.rand([5120, 1024], dtype = torch.bfloat16)
