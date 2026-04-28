@@ -53,6 +53,14 @@ static const std::string generate_offset(const std::vector<int>& subShape, PTO_L
     return ret.str();
 }
 
+static const std::string generate_offset(const std::vector<int>& subShape, const std::string& tensorName) {
+    std::stringstream ret;
+    ret << "(tl.arange(0, " << subShape[0] << "))[:, None] * " << deviceMemoryPtr[tensorName][1] <<
+        " + (tl.arange(0, " << subShape[1] << "))[None, :] * " << deviceMemoryPtr[tensorName][2];
+
+    return ret.str();
+}
+
 void PTO_MODULE::convert_to_triton(const std::string& fileName) const {
     // 简化处理，假设一个文件只有一个class
     if (classOrFunc.size() != 1 || classOrFunc[0]->type() != PTO_NODE_TYPE::CLASS) {
@@ -341,7 +349,7 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
             convertName.emplace_back(name);
 
             fout << indent << "\t#" << arguments[i]->get_type_str()[0] << std::endl;
-            fout << indent << "\t" << convertName[0] << ", " << convertName[1] << ", " << convertName[2] << std::endl;
+            fout << indent << "\t" << convertName[0] << ", " << convertName[1] << ", " << convertName[2] << ", " << std::endl;
         }
         else if (argType.kind == PTO_TYPE_KIND::INT32) {
             kernelUsedVarName.insert(arguments[i]->to_string());
@@ -886,7 +894,23 @@ void PTO_RETURN::convert_to_triton_kernel(int depth, std::ofstream& fout) {
         if (localVar.find(val->to_string()) == localVar.end()) {
             continue;
         }
-        fout << indent << "tl.store(" << deviceMemoryPtr[val->to_string()][0] << ", " << val->to_string() << ")";
+        // 需要生成对应的offset
+        std::string offsetName = val->to_string() + "_offset";
+        while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+            offsetName += '_';
+        }
+        kernelUsedVarName.insert(offsetName);
+
+        // 必须是二维tensor
+        const auto& valDataType = val->get_data_type();
+        if (valDataType.kind != PTO_TYPE_KIND::TENSOR || valDataType.shape.size() != 2) {
+            SPDLOG_ERROR("Only support two-dimension tensor");
+            return;
+        }
+
+        fout << indent << offsetName << " = " << generate_offset(valDataType.shape, val->to_string()) << std::endl;
+
+        fout << indent << "tl.store(" << deviceMemoryPtr[val->to_string()][0] << " + " << offsetName << ", " << val->to_string() << ")";
     }
 
 }
