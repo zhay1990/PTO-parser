@@ -13,30 +13,6 @@ struct CallGraphNode {
     bool isRoot;
 };
 
-struct LIVE_VARIABLE {
-    bool partLive;
-    std::string varName;
-    std::unordered_set<int> index;
-
-    LIVE_VARIABLE()
-        : partLive(false),
-          varName(),
-          index()
-    {}
-
-    LIVE_VARIABLE(const std::string& n)
-        : partLive(false),
-          varName(n),
-          index()
-    {}
-
-    LIVE_VARIABLE(const std::string& n, const int& i)
-        : partLive(true),
-          varName(n),
-          index()
-    {index.insert(i);}
-};
-
 // 记录所有函数哪些输出是需要的
 static std::unordered_map<std::string, std::unordered_set<int>> requiredReturnIndices;
 // 记录所有函数哪些输入被删除
@@ -46,17 +22,15 @@ static std::unordered_map<std::string, std::vector<int>> removedFuncOutput;
 
 // 记录当前函数的哪些输出是需要的，在处理return statement时使用
 static std::unordered_set<int> curRequiredReturnIndices;
-// 记录当前函数的有效变量
-static std::unordered_map<std::string, struct LIVE_VARIABLE> curLiveMap;
-// 记录for loop的init var，用于处理yield语句
-static std::vector<std::vector<std::string>> forInitVar;
-// 记录每个用户定义函数的返回值被赋值给了哪些变量，和removedFuncOutput配合完成变量类型和潜在的indexed variable的序号修改
-static std::unordered_map<std::string, std::unordered_set<std::string>> funcReturnAssignVar;
+// 记录当前函数的有效变量，因为不存在index var了，所以只需要记录变量名
+static std::unordered_set<std::string> curLiveMap;
 
 
 typedef std::unordered_map<std::string, CallGraphNode*> STR_GRAPH_MAP;
 typedef std::unordered_map<std::string, struct LIVE_VARIABLE> STR_LIVE_MAP;
 
+// 注意！！
+// 在调用这个函数前，应当先调用remove_yield和remove_indexed_var函数
 bool PTO_MODULE::dead_code_eliminate() {
     // 先构建调用关系图
     std::unordered_map<std::string, CallGraphNode*> funcInfo;
@@ -168,7 +142,6 @@ bool PTO_MODULE::dead_code_eliminate() {
                 // 不处理无用函数
                 continue;
             }
-            funcReturnAssignVar.clear();
             p->func->adjust_user_func_input();
         }
     }
@@ -257,7 +230,7 @@ bool PTO_TUPLE_VAR::get_callees(std::unordered_set<std::string>& callees) const 
 
 
 const struct DEAD_CODE_RET PTO_FUNC::eliminate_dead_code() {
-    SPDLOG_DEBUG("Processing func {}", funcName);
+    SPDLOG_DEBUG("Processing func {} for dead code elimination", funcName);
 
     // 边构建liveMap 边处理statements的删除
     struct DEAD_CODE_RET ret;
@@ -352,11 +325,10 @@ bool PTO_RETURN::add_to_live_map() const {
 }
 
 bool PTO_FOR_LOOP::add_to_live_map() const {
-    // 先记录这个for循环的init var名字，在后续处理yield语句时需要
-    forInitVar.emplace_back(std::vector<std::string>());
-
-    for (const auto& v : initVar) {
-        forInitVar.back().emplace_back(v->to_string());
+    // remove_yield函数应当清空了initVar
+    if (initVar.size() != 0) {
+        SPDLOG_ERROR("Should call remove_yield() before calling eliminate_dead_code()");
+        return false;
     }
     
     // 循环处理，确定所有的live variable
@@ -377,7 +349,7 @@ bool PTO_FOR_LOOP::add_to_live_map() const {
         ret = true;
     }
 
-    // 处理info里的init values
+    // info里的init values应当是空的
     for (const auto& arg : info->get_arguments()) {
         if (arg->type() == PTO_NODE_TYPE::KEYWORD && ((PTO_KEYWORD*)arg)->get_keyword() == "init_values") {
             const auto& tuple = ((PTO_KEYWORD*)arg)->get_value();
@@ -387,32 +359,19 @@ bool PTO_FOR_LOOP::add_to_live_map() const {
             }
 
             const auto& varList = ((PTO_TUPLE_VAR*)tuple)->get_var_list();
-            if (varList.size() != initVar.size()) {
-                SPDLOG_ERROR("Unexpected Error");
-                return ret;
-            }
-
-            for (std::size_t i = 0; i < varList.size(); ++i) {
-                if (varList[i]->type() != PTO_NODE_TYPE::VARIABLE) {
-                    SPDLOG_ERROR("Unexpected Error");
-                    return ret;
-                }
-
-                if (curLiveMap.find(initVar[i]->to_string()) != curLiveMap.end()) {
-                    ret |= varList[i]->add_to_live_map();
-                }
+            if (varList.size() != 0) {
+                SPDLOG_ERROR("Should call remove_yield() before calling eliminate_dead_code()");
+                return false;
             }
         }
     }
-
-    forInitVar.pop_back();
 
     return ret;
 }
 
 bool PTO_VARIABLE::add_to_live_map() const {
     if (curLiveMap.find(varName) == curLiveMap.end()) {
-        curLiveMap[varName] = LIVE_VARIABLE(varName);
+        curLiveMap.insert(varName);
         SPDLOG_DEBUG("Variable {} at line {} added to live map", varName, row_);
         return true;
     }
@@ -420,151 +379,81 @@ bool PTO_VARIABLE::add_to_live_map() const {
 }
 
 bool PTO_ASSIGNMENT::add_to_live_map() const {
-    // 对于yield的赋值语句需要特殊处理
     bool ret = false;
+
+    // 应当不存在yield语句
     if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.yield_") {
-        if (lhs->type() == PTO_NODE_TYPE::VARIABLE || lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
-            if (forInitVar.size() == 0 || forInitVar.back().size() != 1) {
-                SPDLOG_ERROR("Unexpected Error");
-                return false;
-            }
+        SPDLOG_ERROR("Should call remove_yield() before calling eliminate_dead_code()");
+        return false;
+    }
 
-            // 如果initVar在liveMap里，则lhs也应当被加入
-            if (curLiveMap.find(forInitVar.back()[0]) != curLiveMap.end()) {
-                ret |= lhs->add_to_live_map();
-            }
-            // initVar和yield语句的参数应当保持一致，所以如果initVar不在liveMap里，但lhs在，则initVar也当被加入
-            else if (curLiveMap.find(lhs->to_string()) != curLiveMap.end()) {
-                ret = true;
-                curLiveMap[forInitVar.back()[0]] = LIVE_VARIABLE(forInitVar.back()[0]);
-                SPDLOG_DEBUG("Variable {} at line {} added to live map", forInitVar.back()[0], row_);
-            }
+    if (lhs->type() == PTO_NODE_TYPE::VARIABLE || lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
+        if (curLiveMap.find(lhs->to_string()) != curLiveMap.end()) {
+            // 左值被需要
+            ret |= value->add_to_live_map();
 
-            // 处理yield的入参
-            if (curLiveMap.find(lhs->to_string()) != curLiveMap.end()) {
-                const auto& argList = ((PTO_CALL*)value)->get_arguments();
+            // 右值是用户自定义函数？
+            if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name().substr(0, 5) == "self.") {
 
-                if (argList.size() != 1) {
-                    SPDLOG_ERROR("Unexpected Error");
-                    return false;
-                }
+                std::string userFuncName = ((PTO_CALL*)value)->get_func_name().substr(5);
 
-                ret |= argList[0]->add_to_live_map();
+                // 这个函数的所有输出都需要，插入-1表示该信息（实质上只有第一个输出需要）
+                requiredReturnIndices[userFuncName].insert(-1);
+                SPDLOG_DEBUG("All outputs of function {} are required from line {}", userFuncName, row_);
             }
         }
-        else if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE || lhs->type() == PTO_NODE_TYPE::LIST_VARIABLE) {
-            std::vector<PTO_BASE*> list;
-
-            if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
-                list = ((PTO_TUPLE_VAR*)lhs)->get_var_list();
-            } else {
-                list = ((PTO_LIST_VAR*)lhs)->get_var_list();
-            }
-
-            if (forInitVar.size() == 0 || forInitVar.back().size() != list.size()) {
-                SPDLOG_ERROR("Unexpected Error");
-                return false;
-            }
-
-            for (std::size_t i = 0; i < forInitVar.back().size(); ++i) {
-                if (list[i]->type() != PTO_NODE_TYPE::VARIABLE) {
-                    SPDLOG_ERROR("Unexpected Error");
-                    return false;
-                }
-
-                if (curLiveMap.find(forInitVar.back()[i]) != curLiveMap.end()) {
-                    ret |= list[i]->add_to_live_map();
-                }
-                else if (curLiveMap.find(list[i]->to_string()) != curLiveMap.end()) {
-                    ret = true;
-                    curLiveMap[forInitVar.back()[i]] = LIVE_VARIABLE(forInitVar.back()[i]);
-                    SPDLOG_DEBUG("Variable {} at line {} added to live map", forInitVar.back()[i], row_);
-                }
-            }
-
-            // 处理yield的入参
-            const auto& argList = ((PTO_CALL*)value)->get_arguments();
-            if (argList.size() != list.size()) {
-                SPDLOG_ERROR("Unexpected Error");
-                return false;
-            }
-
-            for (std::size_t i = 0; i < list.size(); ++i) {
-                if (list[i]->type() != PTO_NODE_TYPE::VARIABLE || argList[i]->type() != PTO_NODE_TYPE::VARIABLE) {
-                    SPDLOG_ERROR("Unexpected Error");
-                    return false;
-                }
-                if (curLiveMap.find(list[i]->to_string()) != curLiveMap.end()) {
-                    ret |= argList[i]->add_to_live_map();
-                }
-            }
-        }
-        else {
-            SPDLOG_ERROR("Unexpected Error");
+    }
+    else if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+        // 在这种情况下，要求右侧必须是用户自定义函数调用
+        if (value->type() != PTO_NODE_TYPE::FUNC_CALL || ((PTO_CALL*)value)->get_func_name().substr(0, 5) != "self.") {
+            SPDLOG_ERROR("Should be user function call at line {}", row_);
             return false;
+        }
+
+        const auto& varList = ((PTO_TUPLE_VAR*)lhs)->get_var_list();
+        std::string userFuncName = ((PTO_CALL*)value)->get_func_name().substr(5);
+
+        bool outputIsNeeded = false;
+
+        for (std::size_t i = 0; i < varList.size(); ++i) {
+            if (varList[i]->type() != PTO_NODE_TYPE::VARIABLE && varList[i]->type() != PTO_NODE_TYPE::TYPED_VARIABLE) {
+                SPDLOG_ERROR("Unexpected Error");
+                return false;
+            }
+
+            if (curLiveMap.find(varList[i]->to_string()) == curLiveMap.end()) {
+                continue;
+            }
+
+            outputIsNeeded = true;
+
+            // 右侧函数的第i个输出是需要的
+            requiredReturnIndices[userFuncName].insert(i);
+            SPDLOG_DEBUG("The [{}] outputs of function {} are required from line {}", i, userFuncName, row_);
+        }
+
+        if (outputIsNeeded) {
+            ret |= value->add_to_live_map();
         }
     }
     else {
-        // 处理的是SSA，所以左值只会是variable
-        if (lhs->type() == PTO_NODE_TYPE::VARIABLE || lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
-            if (curLiveMap.find(lhs->to_string()) != curLiveMap.end()) {
-                // 左值被需要
-                ret |= value->add_to_live_map();
-
-                // 右值是用户自定义函数？
-                if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name().substr(0, 5) == "self.") {
-                    const auto& info = curLiveMap.find(lhs->to_string())->second;
-
-                    std::string userFuncName = ((PTO_CALL*)value)->get_func_name().substr(5);
-                    if (!info.partLive) {
-                        // 这个函数的所有输出都需要，插入-1表示该信息
-                        requiredReturnIndices[userFuncName].insert(-1);
-                        SPDLOG_DEBUG("All outputs of function {} are required from line {}", userFuncName, row_);
-                    }
-                    else {
-                        requiredReturnIndices[userFuncName].insert(info.index.begin(), info.index.end());
-                        for (const auto& it : info.index) {
-                            SPDLOG_DEBUG("The [{}] outputs of function {} are required from line {}", it, userFuncName, row_);
-                        }
-                    }
-                }
-            }
-        }
-        else {
-            SPDLOG_ERROR("Unexpected Error");
-            return false;
-        }
+        SPDLOG_ERROR("Unexpected Error");
+        return false;
     }
 
     return ret;
 }
 
 bool PTO_INDEXED_VAR::add_to_live_map() const {
-    if (curLiveMap.find(varName) == curLiveMap.end()) {
-        curLiveMap[varName] = LIVE_VARIABLE(varName, index[0]);
-        SPDLOG_DEBUG("Variable {}[{}] at line {} added to live map", varName, index[0], row_);
-        return true;
-    }
-    else {
-        // 有可能是不同的index
-        auto& ptr = curLiveMap[varName];
-
-        if (ptr.partLive && ptr.index.find(index[0]) == ptr.index.end()) {
-            ptr.index.insert(index[0]);
-
-            SPDLOG_DEBUG("Variable {}[{}] at line added to live map", varName, index[0], row_);
-
-            return true;
-        }
-    }
-
+    // 不应该存在index var
+    SPDLOG_ERROR("Should call remove_indexed_var() before calling eliminate_dead_code()");
     return false;
 }
 
 bool PTO_CALL::add_to_live_map() const {
-    // yield函数需要单独处理，不在这处理
+    // 不会出现yield
     if (funcName == "pypto.language.yield_") {
-        SPDLOG_ERROR("Unexpected Error at line {}", row_);
+        SPDLOG_ERROR("Should call remove_yield() before calling eliminate_dead_code()");
         return false;
     }
 
@@ -667,26 +556,6 @@ void PTO_TUPLE_VAR::remove_variable(const std::vector<int>& removeList) {
     }
 }
 
-void PTO_LIST_VAR::remove_variable(const std::vector<int>& removeList) {
-    for (const auto& index : removeList) {
-        if (index >= (int)varList.size()) {
-            SPDLOG_ERROR("Unexpected Error");
-            continue;
-        }
-        SPDLOG_DEBUG("LIST element {} at line {} is removed", varList[index]->to_string(), row_);
-        delete varList[index];
-        varList[index] = nullptr;
-    }
-
-    for (std::size_t i = 0; i < varList.size();) {
-        if (varList[i] == nullptr) {
-            varList.erase(varList.begin() + i);
-        } else {
-            ++ i;
-        }
-    }
-}
-
 void PTO_CALL::remove_variable(const std::vector<int>& removeList) {
     for (const auto& index : removeList) {
         if (index >= (int)arguments.size()) {
@@ -707,78 +576,17 @@ void PTO_CALL::remove_variable(const std::vector<int>& removeList) {
     }
 }
 
-void PTO_KEYWORD::remove_variable(const std::vector<int>& removeList) {
-    switch (value->type()) {
-        case PTO_NODE_TYPE::TUPLE_VARIABLE: 
-            ((PTO_TUPLE_VAR*)value)->remove_variable(removeList);
-            break;
-        case PTO_NODE_TYPE::LIST_VARIABLE:
-            ((PTO_LIST_VAR*)value)->remove_variable(removeList);
-            break;
-        default:
-            SPDLOG_ERROR("Unexpected call to PTO_KEYWORD::remove_variable");
-            break;
-    }
-}
-
 const struct DEAD_CODE_RET PTO_ASSIGNMENT::eliminate_dead_code() {
     struct DEAD_CODE_RET ret;
 
-    // 如果是yield语句则需要特殊处理
+    // 不会是yield语句
     if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.yield_") {
-        if (lhs->type() == PTO_NODE_TYPE::VARIABLE || lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
-            if (curLiveMap.find(lhs->to_string()) == curLiveMap.end()) {
-                ret.keepStatement = false;
-            }
-        }
-        else if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE || lhs->type() == PTO_NODE_TYPE::LIST_VARIABLE) {
-            // 每个变量单独分析
-            std::vector<PTO_BASE*> varList;
-            if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
-                varList = ((PTO_TUPLE_VAR*)lhs)->get_var_list();
-            } else {
-                varList = ((PTO_LIST_VAR*)lhs)->get_var_list();
-            }
-
-            std::vector<int> removeList;
-            for (std::size_t i = 0; i < varList.size(); ++i) {
-                if (varList[i]->type() != PTO_NODE_TYPE::VARIABLE) {
-                    SPDLOG_ERROR("Unexpected Error");
-                    return ret;
-                }
-
-                if (curLiveMap.find(varList[i]->to_string()) == curLiveMap.end()) {
-                    removeList.emplace_back(i);
-                }
-            }
-
-            if (removeList.size() == varList.size()) {
-                ret.keepStatement = false;
-                return ret;
-            }
-
-            if (removeList.size() == 0) {
-                return ret;
-            }
-            
-            ret.modified = true;
-
-            if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
-                ((PTO_TUPLE_VAR*)lhs)->remove_variable(removeList);
-            }
-            else {
-                ((PTO_LIST_VAR*)lhs)->remove_variable(removeList);
-            }
-            
-            ((PTO_CALL*)value)->remove_variable(removeList);
-        }
-        else {
-            SPDLOG_ERROR("Unexpected Error");
-            return ret;
-        }
+        SPDLOG_ERROR("Should call remove_yield() before calling eliminate_dead_code()");
+        return ret;
     }
-    // 只支持SSA格式，所以左侧是单变量
-    else if (lhs->type() == PTO_NODE_TYPE::VARIABLE || lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
+
+    // 输入是类SSA格式，左侧可能是tuple
+    if (lhs->type() == PTO_NODE_TYPE::VARIABLE || lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
         if (curLiveMap.find(lhs->to_string()) == curLiveMap.end()) {
             ret.keepStatement = false;
         }
@@ -787,8 +595,18 @@ const struct DEAD_CODE_RET PTO_ASSIGNMENT::eliminate_dead_code() {
             ret.keepStatement = false;
         }
     }
+    else if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+        // 右侧必须是用户自定义函数的调用
+        if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name().substr(0, 5) == "self.") {
+            // 右侧用户函数可能被多次调用，每次调用所需要的输出可能不确定，所以在当前时间点，没法确认左侧哪些输出应当被删除
+            // 后续确认了用户函数的输出再处理左侧
+        }
+        else {
+            SPDLOG_ERROR("Unexpected Error");
+        }
+    }
     else {
-        SPDLOG_ERROR("Non-SSA assignment at line {}", row_);
+        SPDLOG_ERROR("Unexpected Error");
     }
 
     return ret;
@@ -824,32 +642,6 @@ const struct DEAD_CODE_RET PTO_FOR_LOOP::eliminate_dead_code() {
         SPDLOG_DEBUG("For loop at line {} is entirely removed", row_);
         ret.keepStatement = false;
         return ret;
-    }
-    
-    // 处理initVar
-    std::vector<int> removeList;
-    for (std::size_t i = 0; i < initVar.size(); ++i) {
-        if (curLiveMap.find(initVar[i]->to_string()) == curLiveMap.end()) {
-            SPDLOG_DEBUG("For loop init variable {} at line {} is removed", initVar[i]->to_string(), row_);
-            delete initVar[i];
-            initVar[i] = nullptr;
-            removeList.emplace_back(i);
-            ret.modified = true;
-        }
-    }
-    for (std::size_t i = 0; i < initVar.size();) {
-        if (initVar[i] == nullptr) {
-            initVar.erase(initVar.begin() + i);
-        } else {
-            ++ i;
-        }
-    }
-
-    const auto& argList = info->get_arguments();
-    for (auto& arg : argList) {
-        if (arg->type() == PTO_NODE_TYPE::KEYWORD && ((PTO_KEYWORD*)arg)->get_keyword() == "init_values") {
-            ((PTO_KEYWORD*)arg)->remove_variable(removeList);
-        }
     }
 
     return ret;
@@ -924,38 +716,6 @@ void PTO_IF::adjust_user_func_input() {
 }
 
 void PTO_ASSIGNMENT::adjust_user_func_input() {
-    // 先处理一个问题，右侧的表达式中是否有和用户函数返回值相关联的变量，可能需要调整index，甚至从tuple variable转成普通variable
-    value->adjust_user_func_input();
-
-    // 如果右侧是index var，且对应的函数只有一个output，则上面函数会将其index清空，这里识别下，将其替换为普通variable
-    if (value->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)value)->get_index().size() == 0) {
-        auto newValue = new PTO_VARIABLE(((PTO_INDEXED_VAR*)value)->get_var_name(), value->row(), value->col());
-        SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newValue->to_string(), value->row());
-        delete value;
-        value = newValue;
-    }
-
-
-
-    // 会出现传递的情况吗？即
-    // varA = self.xxx()
-    // varB = varA
-    // xxx = varB[1]
-    // 这种情况？
-    if (value->type() == PTO_NODE_TYPE::VARIABLE) {
-        for (auto& it : funcReturnAssignVar) {
-            if (it.second.find(value->to_string()) != it.second.end()) {
-                SPDLOG_DEBUG("Variable {} is the output of func {} and is propogate to variable {} at line {}",
-                    value->to_string(),
-                    it.first,
-                    lhs->to_string(),
-                    row_
-                );
-                it.second.insert(lhs->to_string());
-            }
-        }
-    }
-
     // 右侧是用户定义函数？
     if (value->type() != PTO_NODE_TYPE::FUNC_CALL) return;
     auto ptr = (PTO_CALL*)value;
@@ -969,326 +729,32 @@ void PTO_ASSIGNMENT::adjust_user_func_input() {
     }
     ptr->remove_variable(removedFuncInput[ptr->get_func_name().substr(5)]);
 
-    if (lhs->type() != PTO_NODE_TYPE::TYPED_VARIABLE) {
-        SPDLOG_ERROR("Non-SSA format assignment at line {}", row_);
-        return;
-    }
-    // 记录左侧变量为该函数的输出
-    // 该变量是否被覆盖了？
-    for (auto& it : funcReturnAssignVar) {
-        if (it.second.find(lhs->to_string()) != it.second.end()) {
-            SPDLOG_DEBUG("Variable {} is changed from func {} to func {} at line {}",
-                lhs->to_string(),
-                it.first,
-                ptr->get_func_name(),
-                row_
-            );
-            it.second.erase(lhs->to_string());
-        }
-    }
-    funcReturnAssignVar[ptr->get_func_name().substr(5)].insert(lhs->to_string());
-
-    // 调整左侧的变量类型
-    lhs->adjust_user_func_input();
-}
-
-void PTO_VARIABLE::adjust_user_func_input() {
-    // 普通变量不需要调整
-    if (typeStr.size() == 0) return;
-
-    // 先确定这个变量是哪个函数的
-    for (const auto& it : funcReturnAssignVar) {
-        if (it.second.find(varName) == it.second.end()) continue;
-
-        const auto& removeList = removedFuncOutput[it.first];
-
-        for (const auto& index : removeList) {
-            if (index >= (int)typeStr.size()) {
-                SPDLOG_ERROR("Unexpected Error");
-                return;
-            }
-
-            SPDLOG_DEBUG("The type {} is removed from variable {} at line {}", typeStr[index], varName, row_);
-            typeStr[index] = "";
-        }
-        for (std::size_t i = 0; i < typeStr.size();) {
-            if (typeStr[i] == "") {
-                typeStr.erase(typeStr.begin() + i);
-            } else {
-                ++ i;
-            }
-        }
-    }
-}
-
-void PTO_TUPLE_VAR::adjust_user_func_input() {
-    for (auto& var : varList) {
-        var->adjust_user_func_input();
-
-        // var有可能是indexed variable，并且index被清空
-        if (var->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)var)->get_index().size() == 0) {
-            auto newVar = new PTO_VARIABLE(((PTO_INDEXED_VAR*)var)->get_var_name(), var->row(), var->col());
-            SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newVar->to_string(), var->row());
-            delete var;
-            var = newVar;
-        }
-    }
-}
-
-void PTO_LIST_VAR::adjust_user_func_input() {
-    for (auto& var : varList) {
-        var->adjust_user_func_input();
-
-        // var有可能是indexed variable，并且index被清空
-        if (var->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)var)->get_index().size() == 0) {
-            auto newVar = new PTO_VARIABLE(((PTO_INDEXED_VAR*)var)->get_var_name(), var->row(), var->col());
-            SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newVar->to_string(), var->row());
-            delete var;
-            var = newVar;
-        }
-    }
-}
-
-void PTO_BINARY_OP::adjust_user_func_input() {
-    lhs->adjust_user_func_input();
-    rhs->adjust_user_func_input();
-
-    // 有可能lhs是indexed var，并被改造成普通variable
-    if (lhs->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)lhs)->get_index().size() == 0) {
-        auto newlhs = new PTO_VARIABLE(((PTO_INDEXED_VAR*)lhs)->get_var_name(), lhs->row(), lhs->col());
-        SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newlhs->to_string(), lhs->row());
-        delete lhs;
-        lhs = newlhs;
-    }
-
-    // 有可能rhs是indexed var，并被改造成普通variable
-    if (rhs->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)rhs)->get_index().size() == 0) {
-        auto newrhs = new PTO_VARIABLE(((PTO_INDEXED_VAR*)rhs)->get_var_name(), rhs->row(), rhs->col());
-        SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newrhs->to_string(), rhs->row());
-        delete rhs;
-        lhs = newrhs;
-    }
-}
-
-void PTO_INDEXED_VAR::adjust_user_func_input() {
-    // 先确认该变量属于哪个user function的输出
-    for (const auto& it : funcReturnAssignVar) {
-        if (it.second.find(varName) == it.second.end()) continue;
-
-        // 拿到该函数的删除列表
-        const auto& removeList = removedFuncOutput[it.first];
-
-        // 当前的index不应当在这个列表里
-        // 每有一个比当前index小的remove index，则当前index需要-1
-        int reduceCount = 0;
-        for (const auto& r : removeList) {
-            if (r == index[0]) {
-                SPDLOG_ERROR("Unexpected Error");
-                return;
-            }
-            else if (r < index[0]) {
-                reduceCount += 1;
-            }
-        }
-        
-        index[0] -= reduceCount;
-
-        // 特殊处理，当前变量类型从tuple变回普通变量，删除index
-        if (requiredReturnIndices[it.first].size() == 1) {
-            if (index[0] != 0) {
-                SPDLOG_ERROR("Unexpected Error");
-                return;
-            }
-
-            index.clear();
-        }
-    }
-}
-
-void PTO_CALL::adjust_user_func_input() {
-    for (auto& arg : arguments) {
-        arg->adjust_user_func_input();
-
-        // 特殊处理
-        if (arg->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)arg)->get_index().size() == 0) {
-            auto newArg = new PTO_VARIABLE(((PTO_INDEXED_VAR*)arg)->get_var_name(), arg->row(), arg->col());
-            SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newArg->to_string(), arg->row());
-            delete arg;
-            arg = newArg;
-        }
-    }
-}
-
-void PTO_KEYWORD::adjust_user_func_input() {
-    value->adjust_user_func_input();
-
-    // 特殊处理
-    if (value->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)value)->get_index().size() == 0) {
-        auto newValue = new PTO_VARIABLE(((PTO_INDEXED_VAR*)value)->get_var_name(), value->row(), value->col());
-        SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newValue->to_string(), value->row());
-        delete value;
-        value = newValue;
-    }
-}
-
-void PTO_RETURN::adjust_user_func_input() {
-    for (auto& r : returnVal) {
-        r->adjust_user_func_input();
-
-        // 特殊处理
-        if (r->type() == PTO_NODE_TYPE::INDEXED_VARIABLE && ((PTO_INDEXED_VAR*)r)->get_index().size() == 0) {
-            auto newR = new PTO_VARIABLE(((PTO_INDEXED_VAR*)r)->get_var_name(), r->row(), r->col());
-            SPDLOG_DEBUG("Indexed variable {} is changed to normal variable at line {}", newR->to_string(), r->row());
-            delete r;
-            r = newR;
-        }
-
-    }
-}
-
-void PTO_MODULE::optimize_parallel_loop() const {
-    // 简化处理，假设一个文件只有一个class
-    if (classOrFunc.size() != 1 || classOrFunc[0]->type() != PTO_NODE_TYPE::CLASS) {
-        SPDLOG_ERROR("Only support one class in one file");
-        return;
-    }
-
-    ((PTO_CLASS*)classOrFunc[0])->optimize_parallel_loop();
-}
-
-void PTO_CLASS::optimize_parallel_loop() {
-    // 找到host函数
-    // 寻找到host函数，现在假定只有一个host函数
-    PTO_FUNC *ptr = nullptr;
-
-    for (const auto& func : functions) {
-        if (func->get_decorate() == "pypto.language.function(type = pypto.language.FunctionType.Orchestration)") {
-            if (ptr != nullptr) {
-                SPDLOG_ERROR("More than one host function is founded, which is not supported");
-                return;
-            }
-            ptr = func;
-        }
-    }
-
-    // 扫描host函数，分析parallel loop的行为
-    ptr->optimize_parallel_loop();
-}
-
-static void extract_parallel_assign(PTO_BASE* ptr, std::vector<PTO_BASE*>& statements) {
-    // 只处理parallel
-    if (ptr->type() != PTO_NODE_TYPE::FOR_LOOP) {
-        return;
-    }
-
-    PTO_FOR_LOOP *forPtr = (PTO_FOR_LOOP*)ptr;
-    if (forPtr->get_info()->get_func_name() != "pypto.language.parallel") {
-        return;
-    }
-
-    // 只处理以下这种情况，这个parallel loop的第一个statement是kernel函数调用
-    // 剩余的语句都是赋值，且赋值的rhs是kernel函数的返回变量
-    auto& innerState = forPtr->get_statements();
-
-    if (innerState[0]->type() != PTO_NODE_TYPE::ASSIGNMENT) {
-        return;
-    }
-    if (((PTO_ASSIGNMENT*)innerState[0])->get_value()->type() != PTO_NODE_TYPE::FUNC_CALL) {
-        return;
-    }
-    // 这里假定class里只有一个host函数，其他都是kernel函数
-    if (((PTO_CALL*)((PTO_ASSIGNMENT*)innerState[0])->get_value())->get_func_name().substr(0, 5) != "self.") {
-        return;
-    }
-
-    // kernel函数的返回变量名
-    std::string kernelRet = ((PTO_ASSIGNMENT*)innerState[0])->get_lhs()->to_string();
-
-    for (std::size_t i = 1; i < innerState.size(); ++i) {
-        if (innerState[i]->type() != PTO_NODE_TYPE::ASSIGNMENT) {
+    // 如果左侧是单一变量，则不处理
+    if (lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
+        if (((PTO_VARIABLE*)lhs)->get_type_str().size() != 1) {
+            SPDLOG_ERROR("Should call remove_indexed_var() before calling eliminate_dead_code()");
             return;
         }
-
-        // 右侧必须是变量
-        PTO_ASSIGNMENT* tempPtr = (PTO_ASSIGNMENT*)innerState[i];
-
-        if (tempPtr->get_value()->type() == PTO_NODE_TYPE::VARIABLE) {
-            if (tempPtr->get_value()->to_string() != kernelRet) {
-                return;
-            }
-        }
-        else if (tempPtr->get_value()->type() == PTO_NODE_TYPE::INDEXED_VARIABLE) {
-            if (((PTO_INDEXED_VAR*)tempPtr->get_value())->get_var_name() != kernelRet) {
-                return;
-            }
-        } else {
-            return;
-        }
+        return;
     }
 
-    // 可以move出来
-    for (std::size_t i = 1; i < innerState.size(); ++ i) {
-        SPDLOG_DEBUG("Move assignment at line {} out of parallel loop", innerState[i]->row());
-        statements.emplace_back(innerState[i]);
+    // 左侧应当是tuple variable
+    if (lhs->type() != PTO_NODE_TYPE::TUPLE_VARIABLE) {
+        SPDLOG_ERROR("Unexpected Error");
+        return;
+    }
+    
+    // 删除左侧tuple里多余的输出
+    ((PTO_TUPLE_VAR*)lhs)->remove_variable(removedFuncOutput[ptr->get_func_name().substr(5)]);
+
+    // 左侧可能只剩一个变量，转化为普通的variable
+    if (((PTO_TUPLE_VAR*)lhs)->get_var_list().size() != 1) {
+        return;
     }
 
-    while (innerState.size() > 1) {
-        innerState.pop_back();
-    }
+    PTO_VARIABLE *newLhs = new PTO_VARIABLE(((PTO_TUPLE_VAR*)lhs)->get_var_list()[0]->to_string(), lhs->row(), lhs->col());
+    newLhs->add_type_str(((PTO_VARIABLE*)((PTO_TUPLE_VAR*)lhs)->get_var_list()[0])->get_type_str()[0]);
+    delete lhs;
+    lhs = newLhs;
 }
-
-void PTO_FUNC::optimize_parallel_loop() {
-    std::vector<PTO_BASE*> newStatements;
-
-    for (auto& ptr : statements) {
-        ptr->optimize_parallel_loop();
-
-        newStatements.emplace_back(ptr);
-
-        extract_parallel_assign(ptr, newStatements);
-    }
-
-    statements = newStatements;
-}
-
-void PTO_FOR_LOOP::optimize_parallel_loop() {
-    std::vector<PTO_BASE*> newStatements;
-
-    for (auto& ptr : statements) {
-        ptr->optimize_parallel_loop();
-
-        newStatements.emplace_back(ptr);
-
-        extract_parallel_assign(ptr, newStatements);
-    }
-
-    statements = newStatements;
-}
-
-void PTO_IF::optimize_parallel_loop() {
-    std::vector<PTO_BASE*> newStatements;
-
-    for (auto& ptr : ifStatement) {
-        ptr->optimize_parallel_loop();
-
-        newStatements.emplace_back(ptr);
-
-        extract_parallel_assign(ptr, newStatements);
-    }
-
-    ifStatement = newStatements;
-
-    newStatements.clear();
-
-    for (auto& ptr : elseStatement) {
-        ptr->optimize_parallel_loop();
-
-        newStatements.emplace_back(ptr);
-
-        extract_parallel_assign(ptr, newStatements);
-    }
-
-    elseStatement = newStatements;
-}
-
 }

@@ -54,6 +54,8 @@ public:
     virtual PTO_NODE_TYPE type() const = 0;
     virtual void dump(int depth, std::ofstream& fout) const = 0;
     virtual void dump_to_pyTorch(int depth, std::ofstream& fout) const = 0;
+    virtual void convert_to_triton_kernel(int, std::ofstream&) {}
+    virtual void convert_to_triton_host(int, std::ofstream&) const {}
 
     ///////////////////
     // 用于类型检查
@@ -65,15 +67,20 @@ public:
     // 用于死代码消除
     ///////////////////
     virtual bool remove_yield() {return true;}
+    virtual bool remove_indexed_var() {return true;}
     virtual bool alias_coalasce() {return false;}
     virtual void build_alias_union() const {}
     virtual bool get_callees(std::unordered_set<std::string>&) const {return true;}
     virtual bool add_to_live_map() const {return false;}
     virtual const struct DEAD_CODE_RET eliminate_dead_code() {return DEAD_CODE_RET();}
-    virtual void adjust_user_func_input() = 0;
+    virtual void adjust_user_func_input() {};
+    virtual void func_input_output_coalasce() {}
 
-    virtual void optimize_parallel_loop() {}
-    virtual void determine_program_id_for_triton_kernel() const {}
+    //////////////////////
+    // 用于生成triton代码
+    //////////////////////
+    virtual PTO_BASE* triton_kernel_call_conversion() {return nullptr;}
+    virtual void collect_triton_kernel_info() const {}
 
     PTO_TYPE& get_data_type() {return dataType;}
 
@@ -102,10 +109,12 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void convert_to_triton_host(int, std::ofstream&) const override;
+    void collect_triton_kernel_info() const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool add_to_live_map() const override;
-    void adjust_user_func_input() override;
     bool alias_coalasce() override;
 
     void add_type_str(const std::string& str) {typeStr.emplace_back(str);}
@@ -126,11 +135,12 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
-    
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void collect_triton_kernel_info() const override;
+
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
-    void adjust_user_func_input() override;
     bool alias_coalasce() override;
 
     void remove_variable(const std::vector<int>&);
@@ -153,14 +163,13 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void collect_triton_kernel_info() const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
-    void adjust_user_func_input() override;
     bool alias_coalasce() override;
-
-    void remove_variable(const std::vector<int>&);
 
     void add_var(PTO_BASE* ptr) {varList.emplace_back(ptr);}
 
@@ -178,9 +187,9 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
-    void adjust_user_func_input() override {}
 
     const float& get_value() const {return value;}
 private:
@@ -196,9 +205,9 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
-    void adjust_user_func_input() override {}
 
     const int& get_value() const {return value;}
 private:
@@ -214,9 +223,9 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
-    void adjust_user_func_input() override {}
 
     const bool& get_value() const {return value;}
 private:
@@ -239,12 +248,15 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void convert_to_triton_host(int, std::ofstream&) const override;
+    void collect_triton_kernel_info() const override;
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
-    void adjust_user_func_input() override;
     bool alias_coalasce() override;
+    bool remove_indexed_var() override;
 
     void set_lhs (PTO_BASE *l) {lhs = l;}
     void set_rhs (PTO_BASE *r) {rhs = r;}
@@ -266,7 +278,6 @@ public:
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool add_to_live_map() const override;
-    void adjust_user_func_input() override;
     bool alias_coalasce() override;
 
     const std::string& get_var_name() const {return varName;}
@@ -286,12 +297,16 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void convert_to_triton_host(int, std::ofstream&) const override;
+    void collect_triton_kernel_info() const override;
+
 
     void infer_type(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
-    void adjust_user_func_input() override;
     bool alias_coalasce() override;
+    bool remove_indexed_var() override;
 
     void remove_variable(const std::vector<int>&);
 
@@ -314,11 +329,11 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     const std::string to_string() const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
 
     bool get_callees(std::unordered_set<std::string>&) const;
-    void adjust_user_func_input() override;
-    void remove_variable(const std::vector<int>&);
     bool alias_coalasce() override;
+    bool remove_indexed_var() override;
     
     void set_value(PTO_BASE* v) {value = v;}
     
@@ -337,9 +352,13 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::ASSIGNMENT;}
     void dump(int depth, std::ofstream& fout) const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void convert_to_triton_host(int, std::ofstream&) const override;
+    void collect_triton_kernel_info() const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
+    bool remove_indexed_var() override;
     bool alias_coalasce() override;
     void build_alias_union() const override;
     bool get_callees(std::unordered_set<std::string>&) const;
@@ -365,6 +384,9 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::RETURN;}
     void dump(int depth, std::ofstream& fout) const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void convert_to_triton_host(int, std::ofstream&) const override;
+    void collect_triton_kernel_info() const override;
 
     bool alias_coalasce() override;
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
@@ -372,7 +394,8 @@ public:
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
-    void adjust_user_func_input() override;
+    void func_input_output_coalasce() override;
+
 
     void add_value(PTO_BASE* v) {returnVal.emplace_back(v);}
     const std::vector<PTO_BASE*>& get_return_val() {return returnVal;}
@@ -389,21 +412,26 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FOR_LOOP;}
     void dump(int depth, std::ofstream& fout) const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void convert_to_triton_host(int, std::ofstream&) const override;
+    void collect_triton_kernel_info() const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
     bool remove_yield() override;
+    bool remove_indexed_var() override;
     bool alias_coalasce() override;
     void build_alias_union() const override;
     void remove_init_var();
 
-    void optimize_parallel_loop() override;
-    void determine_program_id_for_triton_kernel() const override;
+    PTO_BASE* triton_kernel_call_conversion() override;
+    std::vector<PTO_BASE*> extract_kernel_parallelism();
 
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
     void adjust_user_func_input() override;
+    void func_input_output_coalasce() override;
 
     void set_iterator(PTO_VARIABLE* it) {iter = it;}
     void set_call_info(PTO_CALL* c) {info = c;}
@@ -418,6 +446,7 @@ public:
     const std::vector<PTO_VARIABLE*>& get_init_var() const {return initVar;}
     PTO_CALL* get_info() const {return info;}
     std::vector<PTO_BASE*>& get_statements() {return statements;}
+    PTO_VARIABLE* get_iter() const {return iter;}
 private:
     PTO_VARIABLE *iter;
     std::vector<PTO_VARIABLE*> initVar;
@@ -433,18 +462,21 @@ public:
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::IF;}
     void dump(int depth, std::ofstream& fout) const;
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void collect_triton_kernel_info() const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
+    bool remove_indexed_var() override;
     bool alias_coalasce() override;
     void build_alias_union() const override;
     bool get_callees(std::unordered_set<std::string>&) const;
     bool add_to_live_map() const override;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
     void adjust_user_func_input() override;
+    void func_input_output_coalasce() override;
 
-    void optimize_parallel_loop() override;
-    void determine_program_id_for_triton_kernel() const override;
+    PTO_BASE* triton_kernel_call_conversion() override;
     
     void set_comparator(PTO_BINARY_OP *comp) {comparator = comp;}
     void add_if_statements(const std::vector<PTO_BASE*>& s) {ifStatement.insert(ifStatement.end(), s.begin(), s.end());}
@@ -463,13 +495,17 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::FUNCTION;}
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
+    void convert_to_triton_kernel(int, std::ofstream&) override;
+    void convert_to_triton_host(int, std::ofstream&) const override;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
     bool remove_yield() override;
+    bool remove_indexed_var() override;
     bool alias_coalasce() override;
     bool get_callees(std::unordered_set<std::string>&) const;
     const struct DEAD_CODE_RET eliminate_dead_code() override;
     void adjust_user_func_input() override;
+    void func_input_output_coalasce() override;
 
     void add_decoration(const std::string& d) {decorate = d;}
     void add_arguments(const std::vector<PTO_VARIABLE*>& arg) {arguments = arg;}
@@ -481,8 +517,7 @@ public:
     const std::vector<std::string>& get_return_type() const {return returnTypeStr;}
     const std::string& get_decorate() const {return decorate;}
 
-    void optimize_parallel_loop() override;
-    void determine_program_id_for_triton_kernel() const override;
+    PTO_BASE* triton_kernel_call_conversion() override;
 private:
     std::string funcName;
     std::string decorate;
@@ -499,7 +534,7 @@ public:
     void dump(int depth, std::ofstream& fout) const;
     PTO_NODE_TYPE type() const {return PTO_NODE_TYPE::CLASS;}
     void dump_to_pyTorch(int depth, std::ofstream& fout) const override;
-    void convert_to_triton(const std::string& fileName) const;
+    void convert_to_triton(std::ofstream& fout) const;
 
     bool type_check(std::unordered_map<std::string, PTO_TYPE>& validVar) override;
 
@@ -507,9 +542,9 @@ public:
     void add_function_def(PTO_FUNC* ptr) {functions.emplace_back(ptr);}
 
     bool remove_yield() override;
+    bool remove_indexed_var() override;
     bool alias_coalasce() override;
-    void optimize_parallel_loop() override;
-    void adjust_user_func_input() override {}
+    void func_input_output_coalasce() override;
 
     const std::vector<PTO_FUNC*>& get_functions() const {return functions;}
 private:
@@ -534,8 +569,9 @@ public:
     bool type_check() const;
 
     bool remove_yield() const;
+    bool remove_indexed_var() const;
+    void func_input_output_coalasce() const;
     bool alias_coalasce() const;
-    void optimize_parallel_loop() const;
     
     bool dead_code_eliminate();
 private:

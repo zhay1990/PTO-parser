@@ -1181,7 +1181,7 @@ bool PTO_ASSIGNMENT::type_check(STR_PTO_TYPE_MAP& validVar) {
 
             // 每个variable都应当是variable类型
             for (const auto& var : varList) {
-                if (var->type() != PTO_NODE_TYPE::VARIABLE) {
+                if (var->type() != PTO_NODE_TYPE::VARIABLE && var->type() != PTO_NODE_TYPE::TYPED_VARIABLE) {
                     SPDLOG_ERROR("Unexpected Error");
                     return false;
                 }
@@ -1211,6 +1211,7 @@ bool PTO_ASSIGNMENT::type_check(STR_PTO_TYPE_MAP& validVar) {
                 if (!add_var_to_map(varList[i], validVar))
                     return false;
             }
+            lhs->get_data_type() = PTO_TYPE::make_tuple(types);
         }
         else {
             SPDLOG_ERROR("Unexpected lhs type for assignment at line {}", row_);

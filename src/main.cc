@@ -51,6 +51,30 @@ int main(int argc, char** argv) {
 
     SPDLOG_INFO("Yield statements are replaced by assignment.");
 
+    // 去掉索引操作符，简化后续dead code等优化操作
+    if (!module->remove_indexed_var()) {
+        delete module;
+        return 1;
+    }
+
+    SPDLOG_INFO("Indexed variables are replaced as normal variable.");
+
+    // 死代码消除
+    if (!module->dead_code_eliminate()) {
+        delete module;
+        return 1;
+    }
+
+    // 消除等价的变量，如A = B，C = A, 则A,B,C这三个变量是等价的
+    // 该函数返回值表示是否有等价variable被合并
+    module->alias_coalasce();
+
+    // Triton的内核代码没有返回值，所以一般情况下都需要增加输出数据的指针
+    // 但存在一种情况，kernel函数的返回值就存在入参中，这时添加额外输出指针就可能出现功能性问题
+    // 需要扫描识别这种情况，然后在调用处增加赋值语句，将入参和返回值相等的关系在调用处体现
+    // 之后通过alias coalasce之后，这两个变量就会变成一个变量
+    module->func_input_output_coalasce();
+    
     while (true) {
         // 死代码消除
         if (!module->dead_code_eliminate()) {
@@ -64,9 +88,6 @@ int main(int argc, char** argv) {
             break;
         }
     }
-
-    // 将host函数内的parallel statement里的部分赋值语句移动到外面
-    module->optimize_parallel_loop();
 
     SPDLOG_INFO("Code optimization completed!");
 
@@ -115,6 +136,18 @@ int main(int argc, char** argv) {
                                      (std::filesystem::path(options.input_file).stem().string() + "_triton.py");
 
     module->convert_to_triton(tritonFile.string());
+
+    std::ofstream fout2(ptoFile, std::ios::out);
+
+    if (!fout2.is_open()) {
+        SPDLOG_ERROR("Failed to open file: {}", ptoFile.string());
+        delete module;
+        return 1;
+    }
+
+    module->dump(0, fout2);
+
+    fout2.close();
 
     // Clean up
     delete module;
