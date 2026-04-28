@@ -8,7 +8,7 @@ namespace pto_parser
 struct PROGRAM_ID{
     int axis; // grid的第几个维度？
     int range; // kernel函数内部的循环范围，对所有kernel函数的调用是相同的值；对于host内产生的programID，则为-1
-    std::unordered_map<PTO_CALL*, int> rangePerCall; // Host内每次调用kernel函数可能有不同的循环次数，在此处记录
+    std::unordered_map<const PTO_CALL*, int> rangePerCall; // Host内每次调用kernel函数可能有不同的循环次数，在此处记录
 
     PROGRAM_ID()
         : axis(-1),
@@ -26,24 +26,31 @@ static std::unordered_map<std::string, std::unordered_map<int, struct PROGRAM_ID
 static std::unordered_map<std::string, std::vector<std::string>> deviceMemoryPtr;
 // 记录当前kernel函数内哪些devicememory指针被直接使用
 static std::unordered_set<std::string> directUsedDeviceMemory;
-// 记录每个kernel函数的第几个output指针需要新建
+// 记录每个kernel函数的第几个output指针需要在函数的参数列表里新建
 static std::unordered_map<std::string, std::unordered_set<int>> kernelOutputPtr;
 // 记录当前kernel函数的返回变量名
 static std::vector<std::string> curOutputName;
 // 转换成triton的过程中，不是一对一转化，可能需要生成新的中间变量，所以这里记录kernenl函数内部用到的变量名，避免错误
 static std::unordered_set<std::string> kernelUsedVarName;
+// 记录存在于local内存的变量，作为是否需要添加tl.store的依据
+static std::unordered_set<std::string> localVar;
 
 
 
-static void generate_offset(const std::string& indent, std::ofstream& fout, const std::string& lhsName, const std::string& tensorName, PTO_LIST_VAR* subShape, PTO_LIST_VAR* startPos) {
-    if (subShape->get_var_list()[0]->type() == PTO_NODE_TYPE::INT_CONSTANT && subShape->get_var_list()[1]->type() == PTO_NODE_TYPE::INT_CONSTANT) {
-        fout << indent << lhsName << "_offset = " << 
-        "(" << startPos->get_var_list()[0]->to_string() << " + tl.arange(0, " << subShape->get_var_list()[0]->to_string() << "))[:, None] * " << tensorName << "_stride_0 + " <<
-        "(" << startPos->get_var_list()[1]->to_string() << " + tl.arange(0, " << subShape->get_var_list()[1]->to_string() << "))[None, :] * " << tensorName << "_stride_1" << std::endl;
-    }
-    else {
-        SPDLOG_ERROR("Non-constant subshape");
-    }
+static const std::string generate_offset(PTO_LIST_VAR* subShape, PTO_LIST_VAR* startPos, const std::string& tensorName) {
+    std::stringstream ret;
+    ret << "(" << startPos->get_var_list()[0]->to_string() << " + tl.arange(0, " << subShape->get_var_list()[0]->to_string() << "))[:, None] * " << deviceMemoryPtr[tensorName][1] <<
+        " + (" << startPos->get_var_list()[1]->to_string() << " + tl.arange(0, " << subShape->get_var_list()[1]->to_string() << "))[None, :] * " << deviceMemoryPtr[tensorName][2];
+
+    return ret.str();
+}
+
+static const std::string generate_offset(const std::vector<int>& subShape, PTO_LIST_VAR* startPos, const std::string& tensorName) {
+    std::stringstream ret;
+    ret << "(" << startPos->get_var_list()[0]->to_string() << " + tl.arange(0, " << subShape[0] << "))[:, None] * " << deviceMemoryPtr[tensorName][1] <<
+        " + (" << startPos->get_var_list()[1]->to_string() << " + tl.arange(0, " << subShape[1] << "))[None, :] * " << deviceMemoryPtr[tensorName][2];
+
+    return ret.str();
 }
 
 void PTO_MODULE::convert_to_triton(const std::string& fileName) const {
@@ -102,7 +109,8 @@ void PTO_CLASS::convert_to_triton(std::ofstream& fout) const {
         func->convert_to_triton_kernel(1, fout);
     }
 
-    // ptr->convert_to_triton_host(1, fout);
+    // 生成host代码
+    ptr->convert_to_triton_host(1, fout);
 }
 
 PTO_BASE* PTO_FUNC::triton_kernel_call_conversion() {
@@ -258,6 +266,7 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
     directUsedDeviceMemory.clear();
     curOutputName.clear();
     kernelUsedVarName.clear();
+    localVar.clear();
 
     std::vector<std::string> programIDName(curProgramIDInfo.size(), "");
 
@@ -417,406 +426,485 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
         fout << indent << "\t" << programIDName[i] << " = tl.program_id(axis = " << i << ")" << std::endl;
     }
 
-    // 输出使用到的deviceMemory
+    // 对于直接只用的device memory生成tl.load
     for (const auto& var : directUsedDeviceMemory) {
         fout << indent << "\t" << var << " = tl.load(" << deviceMemoryPtr[var][0] << ")" << std::endl;
     }
-
-    // if (statements.size() == 2 && 
-    //     statements[0]->type() == PTO_NODE_TYPE::FOR_LOOP && 
-    //     ((PTO_FOR_LOOP*)statements[0])->get_info()->type() == PTO_NODE_TYPE::FUNC_CALL &&
-    //     ((PTO_CALL*)((PTO_FOR_LOOP*)statements[0])->get_info())->get_func_name() == "pypto.language.parallel" &&
-    //     statements[1]->type() == PTO_NODE_TYPE::RETURN
-    // ) {
-    //     // 处理program ID, parallel的iter是个新的program_ID
-    //     auto forPtr = (PTO_FOR_LOOP*)statements[0];
-
-    //     curProgramIDInfo
-
-    //     programIDInfo[forPtr->get_iter()->to_string()].axis = programIDInfo.size();
-    //     programIDInfo[forPtr->get_iter()->to_string()].range = std::stoi(forPtr->get_info()->get_arguments()[0]->to_string());
-
-    //     for (const auto& it : programIDInfo) {
-    //         fout << indent << "\t" << it.first << " = tl.program_id(axis = " << it.second.axis << ")" << std::endl;
-    //     }
-
-    //     // 先扫描所有statement，是否有直接使用input tensor的？需要在这里先增加对应的tl.load指令
-    //     // 注意，这里不需要考虑slice，assemble函数需要特殊考虑
-
-    //     for (const auto& s: forPtr->get_statements()) {
-    //         s->convert_to_triton_kernel(depth + 1, fout);
-    //         fout << std::endl;
-    //     }
-    // } else {
-    //     // 先扫描所有statement，是否有直接使用input tensor的？需要在这里先增加对应的tl.load指令
-    //     // 注意，这里不需要考虑slice，assemble函数需要特殊考虑
-
-    //     for (const auto& it : statements) {
-    //         it->convert_to_triton_kernel(depth + 1, fout);
-    //         fout << std::endl;
-    //     }
-    // }
-
-    // fout << std::endl;
+    
+    // 逐个生成statement，在这个过程中需要记录有哪些variable是在local memory中，如果这个variable出现在return中时，
+    // 则需要生成tl.store命令，注意，assemble指令会转换成tl.store,这时这个variable则认为被存到device memory中了
+    for (const auto& it : statements) {
+        it->convert_to_triton_kernel(depth + 1, fout);
+        if (it->type() != PTO_NODE_TYPE::FOR_LOOP && it->type() != PTO_NODE_TYPE::IF) {
+            fout << std::endl;
+        }
+    }
+    fout << std::endl;
 }
 
 void PTO_ASSIGNMENT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
+    std::string indent(depth, '\t');
 
-    // // 如果右侧是funcCall，有几个情况需要特殊处理
-    // if (value->type() == PTO_NODE_TYPE::FUNC_CALL) {
-    //     auto ptr = (PTO_CALL*)value;
-    //     if (ptr->get_func_name() == "pypto.language.tensor.slice") {
-    //         const auto tensorName = ptr->get_arguments()[0]->to_string();
+    // 如果右侧是funcCall,则有几个特殊情况需要处理
+    if (value->type() == PTO_NODE_TYPE::FUNC_CALL) {
+        auto funcPtr = (PTO_CALL*)value;
+        if (funcPtr->get_func_name() == "pypto.language.tensor.slice") {
+            const auto& tensorName = funcPtr->get_arguments()[0]->to_string();
 
-    //         // 强制要求是二维tensor
-    //         const auto subShape = (PTO_LIST_VAR*)ptr->get_arguments()[1];
-    //         const auto startPos = (PTO_LIST_VAR*)ptr->get_arguments()[2];
+            // 强制要求是二维tensor
+            const auto subShape = (PTO_LIST_VAR*)funcPtr->get_arguments()[1];
+            const auto startPos = (PTO_LIST_VAR*)funcPtr->get_arguments()[2];
 
-    //         if (subShape->get_var_list().size() != 2) {
-    //             SPDLOG_ERROR("Only support two-dimensional tensor");
-    //             return;
-    //         }
+            if (subShape->get_var_list().size() != 2) {
+                SPDLOG_ERROR("Only support two-dimensional tensor");
+                return;
+            }
 
-    //         if (deviceMemoryPtr.find(tensorName) != deviceMemoryPtr.end()) {
-    //             generate_offset(indent, fout, lhs->to_string(), tensorName, subShape, startPos);
-    //             fout << indent << lhs->to_string() << " = tl.load(" << tensorName << "_ptr + " << lhs->to_string() << "_offset)";
-    //         }
-    //         else {
-    //             fout << indent << lhs->to_string() << " = " << tensorName << "[" <<
-    //                             startPos->get_var_list()[0]->to_string() << ": " << startPos->get_var_list()[0]->to_string() << " + " << subShape->get_var_list()[0]->to_string() << ", " <<
-    //                             startPos->get_var_list()[1]->to_string() << ": " << startPos->get_var_list()[1]->to_string() << " + " << subShape->get_var_list()[1]->to_string() << "]";
-    //         }
+            if (deviceMemoryPtr.find(tensorName) != deviceMemoryPtr.end()) {
+                // 是从device memory加载回来的local变量
+                // 在这个statement时，虽然这个变量存在于local memory中，但其值没有发生改变，所以先不需要存于localVar中
+                // 先生成所需要的offset变量
+                std::string offsetName = lhs->to_string() + "_offset";
+                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                    offsetName += '_';
+                }
+                kernelUsedVarName.insert(offsetName);
+                fout << indent << offsetName << " = " << generate_offset(subShape, startPos, tensorName) << std::endl;
+                fout << indent << lhs->to_string() << " = tl.load(" << deviceMemoryPtr[tensorName][0] << " + " << offsetName << ")";
+            }
+            else {
+                // 是从local memory到local memory的变量赋值
+                // 认为左侧的变量是新的
+                localVar.insert(lhs->to_string());
+                fout << indent << lhs->to_string() << " = " << tensorName << "[" <<
+                    startPos->get_var_list()[0]->to_string() << ": " << startPos->get_var_list()[0]->to_string() << " + " << subShape->get_var_list()[0]->to_string() << ", " <<
+                    startPos->get_var_list()[1]->to_string() << ": " << startPos->get_var_list()[1]->to_string() << " + " << subShape->get_var_list()[1]->to_string() << "]";
+            }
+            // 处理完毕
+            return;
+        }
+        else if (funcPtr->get_func_name() == "pypto.language.tensor.assemble") {
+            if (deviceMemoryPtr.find(lhs->to_string()) != deviceMemoryPtr.end()) {
+                // 对于A = pl.assemble(B, C, [startPos])
+                // 如果B是个存在于local memory中的变量，则无论A是否等于B，等先需要一个tl.store将B存入A的位置
+                // 之后再计算C的offset，把C存入A的对应位置
+                // 这两部操作后，我们认为A的值已经存在于device memory中了，所以可以从localVar中删除A
+                // 注意，我们不能删除B
+                const auto src0Name = funcPtr->get_arguments()[0]->to_string();
+                if (localVar.find(src0Name) != localVar.end()) {
+                    fout << indent << "tl.store(" << deviceMemoryPtr[lhs->to_string()][0] << ", " << src0Name << ")" << std::endl;
+                }
 
-    //         return;
-    //     }
-    //     else if (ptr->get_func_name() == "pypto.language.tensor.assemble") {
-    //         if (deviceMemoryPtr.find(lhs->to_string()) != deviceMemoryPtr.end()) {
-    //             if (lhs->to_string() != ptr->get_arguments()[0]->to_string()) {
-    //                 // 要加一个store语句
-    //                 fout << indent << "tl.store(" << lhs->to_string() << "_ptr, " << ptr->get_arguments()[0]->to_string() << ")" << std::endl;
-    //             }
+                // 拿到subShape
+                const auto& argDataType = funcPtr->get_arguments()[1]->get_data_type();
+                if (argDataType.kind != PTO_TYPE_KIND::TENSOR || argDataType.shape.size() != 2) {
+                    SPDLOG_ERROR("Only support two-dimensional tensor");
+                    return;
+                }
+                auto offsetName = lhs->to_string() + "_offset";
+                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                    offsetName += '_';
+                }
+                kernelUsedVarName.insert(offsetName);
 
-    //             // 拿到subshape
-    //             const auto& argDataType = ptr->get_arguments()[1]->get_data_type();
-    //             if (argDataType.kind != PTO_TYPE_KIND::TENSOR || argDataType.shape.size() != 2) {
-    //                 SPDLOG_ERROR("Expect two-dimensional tensor");
-    //                 return;
-    //             }
-    //             fout << indent << lhs->to_string() << "_offset = " << 
-    //                 "(" << ((PTO_LIST_VAR*)ptr->get_arguments()[2])->get_var_list()[0]->to_string() << " + tl.arange(0, " << argDataType.shape[0] << "))[:, None] * " << lhs->to_string() << "_stride_0 + " <<
-    //                 "(" << ((PTO_LIST_VAR*)ptr->get_arguments()[2])->get_var_list()[1]->to_string() << " + tl.arange(0, " << argDataType.shape[1] << "))[None, :] * " << lhs->to_string() << "_stride_1" << std::endl;
-    //             fout << indent << "tl.store(" << lhs->to_string() << "_ptr + " << lhs->to_string() << "_offset, " << ptr->get_arguments()[1]->to_string() << ")";
-    //         }
-    //         else {
-    //             // 做一个强限制，要求某个维度必须是1
-    //             const auto& lhsDataType = lhs->get_data_type();
-    //             if (lhsDataType.kind != PTO_TYPE_KIND::TENSOR || lhsDataType.shape.size() != 2) {
-    //                 SPDLOG_ERROR("Only support two-dimension tensor");
-    //                 return;
-    //             }
-    //             if (lhsDataType.shape[0] != 1 && lhsDataType.shape[1] != 1) {
-    //                 SPDLOG_ERROR("One dimension must be 1");
-    //                 return;
-    //             }
-
-    //             // 先做一个赋值
-    //             fout << indent << lhs->to_string() << " = " << ptr->get_arguments()[0]->to_string() << std::endl;
-
-    //             // 用tl.reshape展平成一维
-
+                fout << indent << offsetName << " = " << generate_offset(argDataType.shape, (PTO_LIST_VAR*)funcPtr->get_arguments()[2], lhs->to_string()) << std::endl;
+                fout << indent << "tl.store(" << deviceMemoryPtr[lhs->to_string()][0] << " + " << offsetName << ", " << funcPtr->get_arguments()[1]->to_string() << ")";
+            }
+            else {
+                // 做一个强制要求，要求某个维度必须是1
+                const auto& lhsDataType = lhs->get_data_type();
+                if (lhsDataType.kind != PTO_TYPE_KIND::TENSOR || lhsDataType.shape.size() != 2) {
+                    SPDLOG_ERROR("Only support two-dimension tensor");
+                    return;
+                }
+                if (lhsDataType.shape[0] != 1 && lhsDataType.shape[1] != 1) {
+                    SPDLOG_ERROR("One dimension must be 1");
+                    return;
+                }
                 
-    //             SPDLOG_ERROR("Assemble to non-device ptr");
-    //         }
-    //         return;
-    //     }
-    // }
+                // 先做一个赋值
+                fout << indent << lhs->to_string() << " = " << funcPtr->get_arguments()[0]->to_string() << std::endl;
 
-    // fout << indent << lhs->to_string() << " = ";
-    // value->convert_to_triton_kernel(0, fout);
+                // 拿到第二个参数的维度
+                const auto& valueDataType = funcPtr->get_arguments()[1]->get_data_type();
 
+                if (valueDataType.kind != PTO_TYPE_KIND::TENSOR) {
+                    SPDLOG_ERROR("Unexpected Error");
+                    return;
+                }
+
+                // 先沿着1的维度将lhs和第二个参数压为1维tensor
+                // 使用tl.view将两个变量都压到1维
+                if (lhsDataType.shape[0] == 1) {
+                    fout << indent << lhs->to_string() << " = tl.view(" << lhs->to_string() << ", (" << lhsDataType.shape[1] << ",))" << std::endl;
+                    if (valueDataType.shape[0] != 1) {
+                        SPDLOG_ERROR("Unexpected Error");
+                        return;
+                    }
+                    fout << indent << funcPtr->get_arguments()[1]->to_string() << " = tl.view(" << funcPtr->get_arguments()[1]->to_string() << ", (" << valueDataType.shape[1] << ",))" << std::endl;
+                } else {
+                    fout << indent << lhs->to_string() << " = tl.view(" << lhs->to_string() << ", (" << lhsDataType.shape[0] << ",))" << std::endl;
+                    if (valueDataType.shape[1] != 1) {
+                        SPDLOG_ERROR("Unexpected Error");
+                        return;
+                    }
+                    fout << indent << funcPtr->get_arguments()[1]->to_string() << " = tl.view(" << funcPtr->get_arguments()[1]->to_string() << ", (" << valueDataType.shape[0] << ",))" << std::endl;
+                }
+
+                // 使用tl.cat完成一维向量的拼接
+                // 强制要求拼接的位置要么在开头，要么在末尾，即可以写成两个向量的拼接
+                const auto& startPos = (PTO_LIST_VAR*)funcPtr->get_arguments()[2];
+                if (startPos->get_var_list().size() != 2 || startPos->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT || startPos->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
+                    SPDLOG_ERROR("Unexpected error");
+                    return;
+                }
+
+                if (lhsDataType.shape[0] == 1) {
+                    if (std::stoi(startPos->get_var_list()[0]->to_string()) != 0) {
+                        SPDLOG_ERROR("Unexpected Error");
+                        return;
+                    }
+                    int startPosInt = std::stoi(startPos->get_var_list()[1]->to_string());
+                    
+                    if (startPosInt == 0) {
+                        fout << indent << lhs->to_string() << " = tl.cat(" << funcPtr->get_arguments()[1]->to_string() << ", " << lhs->to_string() << "[" << valueDataType.shape[1] << ": " << lhsDataType.shape[1] << "])" << std::endl;
+                    }
+                    else if (startPosInt + valueDataType.shape[1] == lhsDataType.shape[1]) {
+                        fout << indent << lhs->to_string() << " = tl.cat(" << lhs->to_string() << "[0: " << startPosInt << "], " << funcPtr->get_arguments()[1]->to_string() << ")" << std::endl;
+                    }
+                    else {
+                        SPDLOG_ERROR("Unexpected position for assemble {} {} {}", startPosInt, valueDataType.shape[1], lhsDataType.shape[1]);
+                        return;
+                    }
+                } else {
+                    if (std::stoi(startPos->get_var_list()[1]->to_string()) != 0) {
+                        SPDLOG_ERROR("Unexpected Error");
+                        return;
+                    }
+                    int startPosInt = std::stoi(startPos->get_var_list()[0]->to_string());
+
+                    if (startPosInt == 0) {
+                        fout << indent << lhs->to_string() << " = tl.cat(" << funcPtr->get_arguments()[1]->to_string() << ", " << lhs->to_string() << "[" << valueDataType.shape[0] << ": " << lhsDataType.shape[0] << "])" << std::endl;
+                    }
+                    else if (startPosInt + valueDataType.shape[0] == lhsDataType.shape[0]) {
+                        fout << indent << lhs->to_string() << " = tl.cat(" << lhs->to_string() << "[0: " << startPosInt << "], " << funcPtr->get_arguments()[1]->to_string() << ")" << std::endl;
+                    }
+                    else {
+                        SPDLOG_ERROR("Unexpected position for assemble {} {} {}", startPosInt, valueDataType.shape[0], lhsDataType.shape[0]);
+                        return;
+                    }
+                }
+
+                // 拉回二维
+                if (lhsDataType.shape[0] == 1) {
+                    fout << indent << lhs->to_string() << " = " << lhs->to_string() << "[None, :]";
+                } else {
+                    fout << indent << lhs->to_string() << " = " << lhs->to_string() << "[:, None]";
+                }
+
+                // 左侧的变量在local memory中的值已经修改
+                localVar.insert(lhs->to_string());
+            }
+            // 处理完毕
+            return;
+        }
+    }
+
+    // 常规赋值语句处理，认为左侧的变量都在local memory中，且值已修改
+    localVar.insert(lhs->to_string());
+    fout << indent << lhs->to_string() << " = ";
+    value->convert_to_triton_kernel(0, fout);
 }
 
 void PTO_CALL::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
-    // fout << indent;
-    // if (funcName == "pypto.language.tensor.create") {
-    //     fout << "tl.zeros(";
-    //     for (std::size_t i = 0; i < arguments.size(); ++i) {
-    //         arguments[i]->convert_to_triton_kernel(0, fout);
-    //         if (i != arguments.size() - 1) {
-    //             fout << ", ";
-    //         }
-    //     }
-    //     fout << ")";
-    // }
-    // else if (funcName == "pypto.language.tensor.muls" || funcName == "pypto.language.tensor.mul" || funcName == "pypto.language.tensor.row_expand_mul" || funcName == "pypto.language.tensor.col_expand_mul") {
-    //     if (arguments.size() != 2) {
-    //         SPDLOG_ERROR("Unexpected Error");
-    //         return;
-    //     }
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << " * ";
-    //     arguments[1]->convert_to_triton_kernel(0, fout);
-    // }
-    // else if (funcName == "pypto.language.tensor.cast" || funcName == "pypto.language.cast") {
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << ".to(";
-    //     if (arguments[1]->type() == PTO_NODE_TYPE::KEYWORD) {
-    //         arguments[1]->convert_to_triton_kernel(0, fout);
-    //     }
-    //     else if (arguments[1]->to_string() == "pypto.language.INDEX") {
-    //         fout << "tl.int32";
-    //     }
-    //     else {
-    //         SPDLOG_ERROR("Unimplemented arg {}", arguments[1]->to_string());
-    //     }
-    //     fout << ")";
-    // }
-    // else if (funcName == "pypto.language.tensor.row_sum") {
-    //     fout << "tl.sum(";
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << ", axis = 1)[:, None]";
-    // }
-    // else if (funcName == "pypto.language.tensor.adds" || funcName == "pypto.language.tensor.add") {
-    //     if (arguments.size() != 2) {
-    //         SPDLOG_ERROR("Unexpected Error");
-    //         return;
-    //     }
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << " + ";
-    //     arguments[1]->convert_to_triton_kernel(0, fout);
-    // }
-    // else if (funcName == "pypto.language.tensor.sub" || funcName == "pypto.language.tensor.row_expand_sub") {
-    //     if (arguments.size() != 2) {
-    //         SPDLOG_ERROR("Unexpected Error");
-    //         return;
-    //     }
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << " - ";
-    //     arguments[1]->convert_to_triton_kernel(0, fout);
-    // }
-    // else if (funcName == "pypto.language.tensor.row_expand_div") {
-    //     if (arguments.size() != 2) {
-    //         SPDLOG_ERROR("Unexpected Error");
-    //         return;
-    //     }
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << " / ";
-    //     arguments[1]->convert_to_triton_kernel(0, fout);
-    // }
-    // else if (funcName == "pypto.language.tensor.rsqrt") {
-    //     fout << "tl.math.rsqrt(";
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << ")";
-    // }
-    // else if (funcName == "pypto.language.tensor.exp") {
-    //     fout << "tl.exp(";
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << ")";
-    // }
-    // else if (funcName == "pypto.language.tensor.matmul") {
-    //     fout << "tl.dot(";
-    //     // a_trans是否为真
-    //     bool a_trans = false, b_trans = false;
-    //     for (const auto& arg : arguments) {
-    //         if (arg->type() == PTO_NODE_TYPE::KEYWORD && ((PTO_KEYWORD*)arg)->get_keyword() == "a_trans") {
-    //             if (((PTO_KEYWORD*)arg)->get_value()->to_string() == "true") {
-    //                 a_trans = true;
-    //             }
-    //         }
-    //         if (arg->type() == PTO_NODE_TYPE::KEYWORD && ((PTO_KEYWORD*)arg)->get_keyword() == "b_trans") {
-    //             if (((PTO_KEYWORD*)arg)->get_value()->to_string() == "true") {
-    //                 b_trans = true;
-    //             }
-    //         }
-    //     }
+    std::string indent(depth, '\t');
+    fout << indent;
+    if (funcName == "pypto.language.tensor.create") {
+        fout << "tl.zeros(";
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            arguments[i]->convert_to_triton_kernel(0, fout);
+            if (i != arguments.size() - 1) {
+                fout << ", ";
+            }
+        }
+        fout << ")";
+    }
+    else if (funcName == "pypto.language.tensor.muls" || funcName == "pypto.language.tensor.mul" || funcName == "pypto.language.tensor.row_expand_mul" || funcName == "pypto.language.tensor.col_expand_mul") {
+        if (arguments.size() != 2) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << " * ";
+        arguments[1]->convert_to_triton_kernel(0, fout);
+    }
+    else if (funcName == "pypto.language.tensor.cast" || funcName == "pypto.language.cast") {
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << ".to(";
+        if (arguments[1]->type() == PTO_NODE_TYPE::KEYWORD) {
+            arguments[1]->convert_to_triton_kernel(0, fout);
+        }
+        else if (arguments[1]->to_string() == "pypto.language.INDEX") {
+            fout << "tl.int32";
+        }
+        else {
+            SPDLOG_ERROR("Unimplemented arg {}", arguments[1]->to_string());
+        }
+        fout << ")";
+    }
+    else if (funcName == "pypto.language.tensor.row_sum") {
+        fout << "tl.sum(";
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << ", axis = 1)[:, None]";
+    }
+    else if (funcName == "pypto.language.tensor.adds" || funcName == "pypto.language.tensor.add") {
+        if (arguments.size() != 2) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << " + ";
+        arguments[1]->convert_to_triton_kernel(0, fout);
+    }
+    else if (funcName == "pypto.language.tensor.sub" || funcName == "pypto.language.tensor.row_expand_sub") {
+        if (arguments.size() != 2) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << " - ";
+        arguments[1]->convert_to_triton_kernel(0, fout);
+    }
+    else if (funcName == "pypto.language.tensor.row_expand_div") {
+        if (arguments.size() != 2) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << " / ";
+        arguments[1]->convert_to_triton_kernel(0, fout);
+    }
+    else if (funcName == "pypto.language.tensor.rsqrt") {
+        fout << "tl.math.rsqrt(";
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << ")";
+    }
+    else if (funcName == "pypto.language.tensor.exp") {
+        fout << "tl.exp(";
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << ")";
+    }
+    else if (funcName == "pypto.language.tensor.matmul") {
+        fout << "tl.dot(";
+        // a_trans是否为真
+        bool a_trans = false, b_trans = false;
+        for (const auto& arg : arguments) {
+            if (arg->type() == PTO_NODE_TYPE::KEYWORD && ((PTO_KEYWORD*)arg)->get_keyword() == "a_trans") {
+                if (((PTO_KEYWORD*)arg)->get_value()->to_string() == "true") {
+                    a_trans = true;
+                }
+            }
+            if (arg->type() == PTO_NODE_TYPE::KEYWORD && ((PTO_KEYWORD*)arg)->get_keyword() == "b_trans") {
+                if (((PTO_KEYWORD*)arg)->get_value()->to_string() == "true") {
+                    b_trans = true;
+                }
+            }
+        }
 
-    //     if (a_trans) {
-    //         fout << "tl.trans(";
-    //         arguments[0]->convert_to_triton_kernel(0, fout);
-    //         fout << "), ";
-    //     } else {
-    //         arguments[0]->convert_to_triton_kernel(0, fout);
-    //         fout << ", ";
-    //     }
-    //     if (b_trans) {
-    //         fout << "tl.trans(";
-    //         arguments[1]->convert_to_triton_kernel(0, fout);
-    //         fout <<")";
-    //     } else {
-    //         arguments[1]->convert_to_triton_kernel(0, fout);
-    //     }
-    //     fout << ")";
-    // }
-    // else if (funcName == "pypto.language.tensor.row_max") {
-    //     fout << "tl.max(";
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << ", axis = 1)[:, None]";
-    // }
-    // else if (funcName == "pypto.language.tensor.maximum") {
-    //     if (arguments.size() != 2) {
-    //         SPDLOG_ERROR("Unexpected Error");
-    //         return;
-    //     }
-    //     fout << "tl.maximum(";
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << ", ";
-    //     arguments[1]->convert_to_triton_kernel(0, fout);
-    //     fout << ")";
-    // }
-    // else if (funcName == "pypto.language.min") {
-    //     if (arguments.size() != 2) {
-    //         SPDLOG_ERROR("Unexpected Error");
-    //         return;
-    //     }
+        if (a_trans) {
+            fout << "tl.trans(";
+            arguments[0]->convert_to_triton_kernel(0, fout);
+            fout << "), ";
+        } else {
+            arguments[0]->convert_to_triton_kernel(0, fout);
+            fout << ", ";
+        }
+        if (b_trans) {
+            fout << "tl.trans(";
+            arguments[1]->convert_to_triton_kernel(0, fout);
+            fout <<")";
+        } else {
+            arguments[1]->convert_to_triton_kernel(0, fout);
+        }
+        fout << ")";
+    }
+    else if (funcName == "pypto.language.tensor.row_max") {
+        fout << "tl.max(";
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << ", axis = 1)[:, None]";
+    }
+    else if (funcName == "pypto.language.tensor.maximum") {
+        if (arguments.size() != 2) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+        fout << "tl.maximum(";
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << ", ";
+        arguments[1]->convert_to_triton_kernel(0, fout);
+        fout << ")";
+    }
+    else if (funcName == "pypto.language.min") {
+        if (arguments.size() != 2) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
 
-    //     fout << "tl.minimum(";
-    //     arguments[0]->convert_to_triton_kernel(0, fout);
-    //     fout << ", ";
-    //     arguments[1]->convert_to_triton_kernel(0, fout);
-    //     fout << ")";
-    // }
-    // else {
-    //     SPDLOG_ERROR("Unimplemented function name {}", funcName);
-    // }
+        fout << "tl.minimum(";
+        arguments[0]->convert_to_triton_kernel(0, fout);
+        fout << ", ";
+        arguments[1]->convert_to_triton_kernel(0, fout);
+        fout << ")";
+    }
+    else {
+        SPDLOG_ERROR("Unimplemented function name {}", funcName);
+    }
 
 }
 
 void PTO_TUPLE_VAR::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
-    // fout << indent << "(";
-    // for (std::size_t i = 0; i < varList.size(); ++i) {
-    //     varList[i]->convert_to_triton_kernel(0, fout);
-    //     if (i != varList.size() - 1) {
-    //         fout << ", ";
-    //     }
-    // }
-    // fout << ")";
+    std::string indent(depth, '\t');
+    fout << indent << "(";
+    for (std::size_t i = 0; i < varList.size(); ++i) {
+        varList[i]->convert_to_triton_kernel(0, fout);
+        if (i != varList.size() - 1) {
+            fout << ", ";
+        }
+    }
+    fout << ")";
 }
 
 void PTO_LIST_VAR::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
-    // fout << indent << "[";
-    // for (std::size_t i = 0; i < varList.size(); ++i) {
-    //     varList[i]->convert_to_triton_kernel(0, fout);
-    //     if (i != varList.size() - 1) {
-    //         fout << ", ";
-    //     }
-    // }
-    // fout << "]";
+    std::string indent(depth, '\t');
+    fout << indent << "[";
+    for (std::size_t i = 0; i < varList.size(); ++i) {
+        varList[i]->convert_to_triton_kernel(0, fout);
+        if (i != varList.size() - 1) {
+            fout << ", ";
+        }
+    }
+    fout << "]";
 }
 
 void PTO_KEYWORD::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
-    // if (keyword == "dtype") {
-    //     fout << indent << keyword << " = ";
+    std::string indent(depth, '\t');
+    if (keyword == "dtype") {
+        fout << indent << keyword << " = ";
 
-    //     std::string temp = value->to_string();
+        std::string temp = value->to_string();
 
-    //     if (temp == "pypto.language.FP32") {
-    //         fout << "tl.float32";
-    //     }
-    //     else if (temp == "pypto.language.BF16") {
-    //         fout << "tl.bfloat16";
-    //     }
-    //     else {
-    //         SPDLOG_ERROR("Unimplemented data type {}", temp);
-    //     }
-    // }
-    // else if (keyword == "layout") {
-    //     // 忽略
-    // }
-    // else if (keyword == "target_type") {
-    //     std::string temp = value->to_string();
-    //     if (temp == "pypto.language.FP32") {
-    //         fout << "tl.float32";
-    //     }
-    //     else if (temp == "pypto.language.BF16") {
-    //         fout << "tl.bfloat16";
-    //     }
-    //     else {
-    //         SPDLOG_ERROR("Unimplemented data type {}", temp);
-    //     }
-    // }
-    // else {
-    //     SPDLOG_ERROR("Unimplemented keyword {}" , keyword);
-    // }
+        if (temp == "pypto.language.FP32") {
+            fout << "tl.float32";
+        }
+        else if (temp == "pypto.language.BF16") {
+            fout << "tl.bfloat16";
+        }
+        else {
+            SPDLOG_ERROR("Unimplemented data type {}", temp);
+        }
+    }
+    else if (keyword == "layout") {
+        // 忽略
+    }
+    else if (keyword == "target_type") {
+        std::string temp = value->to_string();
+        if (temp == "pypto.language.FP32") {
+            fout << "tl.float32";
+        }
+        else if (temp == "pypto.language.BF16") {
+            fout << "tl.bfloat16";
+        }
+        else {
+            SPDLOG_ERROR("Unimplemented data type {}", temp);
+        }
+    }
+    else {
+        SPDLOG_ERROR("Unimplemented keyword {}" , keyword);
+    }
 }
 
 void PTO_INT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // fout << std::string(depth, '\t') << value;
+    fout << std::string(depth, '\t') << value;
 }
 
 void PTO_FLOAT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // fout << std::string(depth, '\t') << value;
+    fout << std::string(depth, '\t') << value;
 }
 
 void PTO_BOOL::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // if (value) {
-    //     fout << std::string(depth, '\t') << "True";
-    // }
-    // else {
-    //     fout << std::string(depth, '\t') << "False";
-    // }
+    if (value) {
+        fout << std::string(depth, '\t') << "True";
+    }
+    else {
+        fout << std::string(depth, '\t') << "False";
+    }
 }
 
 void PTO_VARIABLE::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // fout << std::string(depth, '\t') << varName;
+    fout << std::string(depth, '\t') << varName;
 }
 
 void PTO_FOR_LOOP::convert_to_triton_kernel(int depth, std::ofstream& fout) {
     // 处理成串行的range
-    // std::string indent(depth, '\t');
-    // fout << indent << "for ";
-    // iter->convert_to_triton_kernel(0, fout);
-    // fout << " in range(";
-    // info->get_arguments()[0]->convert_to_triton_kernel(0, fout);
-    // fout << "):" << std::endl;
-    // for (const auto& s : statements) {
-    //     s->convert_to_triton_kernel(depth + 1, fout);
-    //     fout << std::endl;
-    // }
+    std::string indent(depth, '\t');
+    fout << indent << "for ";
+    iter->convert_to_triton_kernel(0, fout);
+    fout << " in range(";
+    info->get_arguments()[0]->convert_to_triton_kernel(0, fout);
+    fout << "):" << std::endl;
+    for (const auto& s : statements) {
+        s->convert_to_triton_kernel(depth + 1, fout);
+        fout << std::endl;
+    }
 }
 
 void PTO_BINARY_OP::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
-    // fout << indent << "(";
-    // lhs->convert_to_triton_kernel(0, fout);
+    std::string indent(depth, '\t');
+    fout << indent << "(";
+    lhs->convert_to_triton_kernel(0, fout);
 
-    // switch (op) {
-    //     case PTO_OPERATOR::ADD: fout << " + "; break;
-    //     case PTO_OPERATOR::SUB: fout << " - "; break;
-    //     case PTO_OPERATOR::FLOOR_DIV: fout << " // "; break;
-    //     case PTO_OPERATOR::MUL: fout << " * "; break;
-    //     case PTO_OPERATOR::EQUAL: fout << " == "; break;
-    // }
-    // rhs->convert_to_triton_kernel(0, fout);
-    // fout << ")";
+    switch (op) {
+        case PTO_OPERATOR::ADD: fout << " + "; break;
+        case PTO_OPERATOR::SUB: fout << " - "; break;
+        case PTO_OPERATOR::FLOOR_DIV: fout << " // "; break;
+        case PTO_OPERATOR::MUL: fout << " * "; break;
+        case PTO_OPERATOR::EQUAL: fout << " == "; break;
+    }
+    rhs->convert_to_triton_kernel(0, fout);
+    fout << ")";
 }
 
 void PTO_RETURN::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
-    // for (const auto& val : returnVal) {
-    //     fout << indent << "tl.store(" << val->to_string() << "_ptr, " << val->to_string() << ")";
-    // }
+    std::string indent(depth, '\t');
+    for (const auto& val : returnVal) {
+        if (deviceMemoryPtr.find(val->to_string()) == deviceMemoryPtr.end()) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+
+        // 需要做一个判断，返回的值是否只存在于local memory中，可能之前已经有assemble语句将值存回device里
+        if (localVar.find(val->to_string()) == localVar.end()) {
+            continue;
+        }
+        fout << indent << "tl.store(" << deviceMemoryPtr[val->to_string()][0] << ", " << val->to_string() << ")";
+    }
 
 }
 
 void PTO_IF::convert_to_triton_kernel(int depth, std::ofstream& fout) {
-    // std::string indent(depth, '\t');
-    // fout << indent << "if ";
-    // comparator->convert_to_triton_kernel(0, fout);
-    // fout << ":" << std::endl;
-    // for (const auto& s : ifStatement) {
-    //     s->convert_to_triton_kernel(depth + 1, fout);
-    //     fout << std::endl;
-    // }
-    // fout << indent << "else:" << std::endl;
-    // for (const auto& s : elseStatement) {
-    //     s->convert_to_triton_kernel(depth + 1, fout);
-    //     fout << std::endl;
-    // }
+    std::string indent(depth, '\t');
+    fout << indent << "if ";
+    comparator->convert_to_triton_kernel(0, fout);
+    fout << ":" << std::endl;
+    for (const auto& s : ifStatement) {
+        s->convert_to_triton_kernel(depth + 1, fout);
+        fout << std::endl;
+    }
+    fout << indent << "else:" << std::endl;
+    for (const auto& s : elseStatement) {
+        s->convert_to_triton_kernel(depth + 1, fout);
+        fout << std::endl;
+    }
 }
 
 void PTO_VARIABLE::collect_triton_kernel_info() const {
@@ -953,368 +1041,271 @@ std::vector<PTO_BASE*> PTO_FOR_LOOP::extract_kernel_parallelism() {
 }
 
 static void create_device_memory_on_host(const std::string& indent, std::ofstream& fout, const std::string& name, const std::vector<int>& shape, const std::string& type) {
-    // if (deviceMemoryPtr.find(name) != deviceMemoryPtr.end()) return;
-    // deviceMemoryPtr.insert(name);
+    if (deviceMemoryPtr.find(name) != deviceMemoryPtr.end()) return;
+    deviceMemoryPtr[name] = std::vector<std::string>();
 
-    // if (shape.size() != 2) {
-    //     SPDLOG_ERROR("Only support two-dimensional tensor");
-    //     return;
-    // }
+    if (shape.size() != 2) {
+        SPDLOG_ERROR("Only support two-dimensional tensor");
+        return;
+    }
 
-    // fout << indent << name << " = torch.empty([" << shape[0] << ", " << shape[1] << "], " <<
-    //                           "dtype = torch." << type << ", device = 'cuda')" << std::endl;
+    fout << indent << name << " = torch.empty([" << shape[0] << ", " << shape[1] << "], " <<
+                              "dtype = torch." << type << ", device = 'cuda')" << std::endl;
 }
 
 void PTO_FUNC::convert_to_triton_host(int depth, std::ofstream& fout) const {
-    // std::string indent(depth, '\t');
+    std::string indent(depth, '\t');
 
-    // // 记录哪些变量的device memory已经创建，后续不会在重复创建
-    // deviceMemoryPtr.clear();
+    // 记录哪些变量的device memory已经创建，后续不会在重复创建
+    deviceMemoryPtr.clear();
 
-    // fout << indent << "def " << funcName << "(";
-    // for (const auto& arg : arguments) {
-    //     fout << arg->to_string() << ", ";
+    fout << indent << "def " << funcName << "(";
+    for (const auto& arg : arguments) {
+        fout << arg->to_string() << ", ";
 
-    //     if (arg->get_data_type().kind == PTO_TYPE_KIND::TENSOR) {
-    //         deviceMemoryPtr.insert(arg->to_string());
-    //     }
-    // }
-    // fout << "):" << std::endl;
+        if (arg->get_data_type().kind == PTO_TYPE_KIND::TENSOR) {
+            deviceMemoryPtr[arg->to_string()] = std::vector<std::string>();
+        }
+    }
+    fout << "):" << std::endl;
 
 
-    // for (const auto& s : statements) {
-    //     s->convert_to_triton_host(depth + 1, fout);
-    //     fout << std::endl;
-    // }
+    for (const auto& s : statements) {
+        s->convert_to_triton_host(depth + 1, fout);
+        if (s->type() != PTO_NODE_TYPE::FOR_LOOP && s->type() != PTO_NODE_TYPE::IF) {
+            fout << std::endl;
+        }
+    }
 }
 
 void PTO_ASSIGNMENT::convert_to_triton_host(int depth, std::ofstream& fout) const {
-    // std::string indent(depth, '\t');
+    std::string indent(depth, '\t');
 
-    // // 对于kernel函数的调用需要特殊处理
-    // if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name().substr(0, 5) == "self.") {
-    //     // 先要创建output memory
-    //     const auto& lhsDataType = lhs->get_data_type();
-    //     if (lhsDataType.kind == PTO_TYPE_KIND::TENSOR) {
-    //         if (lhsDataType.shape.size() != 2) {
-    //             SPDLOG_ERROR("Only support two-dimensional tensor");
-    //             return;
-    //         }
-    //         std::string tensorType = "";
-    //         if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::BF16) {
-    //             tensorType = "bfloat16";
-    //         }
-    //         else if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::FP32) {
-    //             tensorType = "float32";
-    //         }
-    //         else {
-    //             SPDLOG_ERROR("Unsupported data type");
-    //             return;
-    //         }
-    //         create_device_memory_on_host(indent, fout, lhs->to_string(), lhsDataType.shape, tensorType);
+    // 对于kernel函数的调用需要特殊处理
+    if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name().substr(0, 5) == "self.") {
+        std::string kernelName = ((PTO_CALL*)value)->get_func_name().substr(5);
+        // 先要创建output memory
+        if (lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
+            const auto& lhsDataType = lhs->get_data_type();
+            if (lhsDataType.kind != PTO_TYPE_KIND::TENSOR || lhsDataType.shape.size() != 2) {
+                SPDLOG_ERROR("Only support two-dimensional tensor");
+                return;
+            }
+            std::string tensorType = "";
+            if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::BF16) {
+                tensorType = "bfloat16";
+            }
+            else if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::FP32) {
+                tensorType = "float32";
+            }
+            else {
+                SPDLOG_ERROR("Unsupported data type");
+                return;
+            }
+            create_device_memory_on_host(indent, fout, lhs->to_string(), lhsDataType.shape, tensorType);
+        }
+        else if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+            const auto& varList = ((PTO_TUPLE_VAR*)lhs)->get_var_list();
+            for (const auto& var : varList) {
+                const auto& lhsDataType = var->get_data_type();
+                if (lhsDataType.kind != PTO_TYPE_KIND::TENSOR || lhsDataType.shape.size() != 2) {
+                    SPDLOG_ERROR("Only support two-dimensional tensor");
+                    return;
+                }
+                std::string tensorType = "";
+                if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::BF16) {
+                    tensorType = "bfloat16";
+                }
+                else if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::FP32) {
+                    tensorType = "float32";
+                }
+                else {
+                    SPDLOG_ERROR("Unsupported data type");
+                    return;
+                }
+                create_device_memory_on_host(indent, fout, var->to_string(), lhsDataType.shape, tensorType);
+            }
+        }
+        else {
+            SPDLOG_ERROR("Unimplemented");
+            return;
+        }
+        value->convert_to_triton_host(depth, fout);
 
-    //         value->convert_to_triton_host(depth, fout);
+        // 处理输出
+        if (lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
+            if (kernelOutputPtr.find(kernelName) != kernelOutputPtr.end() && kernelOutputPtr[kernelName].find(0) != kernelOutputPtr[kernelName].end()) {
+                fout << lhs->to_string() << ", " << lhs->to_string() << ".stride(0), " << lhs->to_string() << ".stride(1), ";
+            }
+        }
+        else if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+            const auto& varList = ((PTO_TUPLE_VAR*)lhs)->get_var_list();
+            for (std::size_t i = 0; i < varList.size(); ++i) {
+                if (kernelOutputPtr.find(kernelName) != kernelOutputPtr.end() && kernelOutputPtr[kernelName].find(i) != kernelOutputPtr[kernelName].end()) {
+                    fout << varList[i]->to_string() << ", " << varList[i]->to_string() << ".stride(0), " << varList[i]->to_string() << "stride(1), ";
+                }
+            }
+        }
+        else {
+            SPDLOG_ERROR("Unimplemented");
+            return;
+        }
 
-    //         // 处理输出
-    //         fout << lhs->to_string() << ", " << lhs->to_string() << ".stride(0), " << lhs->to_string() << ".stride(1))";
-    //     }
-    //     else {
-    //         SPDLOG_ERROR("Unimplemented");
-    //         return;
-    //     }
-    // }
-    // // 对于assemble需要特殊处理
-    // else if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.tensor.assemble") {
-    //     // 这个函数特殊处理，如果第一个argument和lhs不是同一个变量，则需要拆成两个assignment
-    //     const auto& args = ((PTO_CALL*)value)->get_arguments();
+        fout << ")";
+    }
+    // 对于assemble需要特殊处理
+    else if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.tensor.assemble") {
+        // 这个函数特殊处理，如果第一个argument和lhs不是同一个变量，则需要拆成两个assignment
+        const auto& args = ((PTO_CALL*)value)->get_arguments();
 
-    //     if (args[0]->to_string() != lhs->to_string()) {
-    //         lhs->dump_to_pyTorch(depth, fout);
-    //         fout << " = ";
-    //         args[0]->dump_to_pyTorch(0, fout);
-    //         fout << std::endl;
-    //     }
+        if (args[0]->to_string() != lhs->to_string()) {
+            lhs->dump_to_pyTorch(depth, fout);
+            fout << " = ";
+            args[0]->dump_to_pyTorch(0, fout);
+            fout << std::endl;
+        }
         
-    //     lhs->dump_to_pyTorch(depth, fout);
-    //     fout << " [";
+        lhs->dump_to_pyTorch(depth, fout);
+        fout << " [";
 
-    //     std::vector<PTO_BASE*> varList;
-    //     if (args[2]->type() == PTO_NODE_TYPE::LIST_VARIABLE) {
-    //         varList = ((PTO_LIST_VAR*)args[2])->get_var_list();
-    //     } else if (args[2]->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
-    //         varList = ((PTO_TUPLE_VAR*)args[2])->get_var_list();
-    //     } else {
-    //         SPDLOG_ERROR("Unexpected Error");
-    //         return;
-    //     }
-    //     for (std::size_t i = 0; i < varList.size(); ++i) {
-    //         varList[i]->dump_to_pyTorch(0, fout);
-    //         fout << ": ";
-    //         varList[i]->dump_to_pyTorch(0, fout);
-    //         fout << " + ";
-    //         args[1]->dump_to_pyTorch(0, fout);
-    //         fout << ".shape[" << i << "]";
+        std::vector<PTO_BASE*> varList;
+        if (args[2]->type() == PTO_NODE_TYPE::LIST_VARIABLE) {
+            varList = ((PTO_LIST_VAR*)args[2])->get_var_list();
+        } else if (args[2]->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+            varList = ((PTO_TUPLE_VAR*)args[2])->get_var_list();
+        } else {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+        for (std::size_t i = 0; i < varList.size(); ++i) {
+            varList[i]->dump_to_pyTorch(0, fout);
+            fout << ": ";
+            varList[i]->dump_to_pyTorch(0, fout);
+            fout << " + ";
+            args[1]->dump_to_pyTorch(0, fout);
+            fout << ".shape[" << i << "]";
 
-    //         if (i != varList.size() - 1)
-    //             fout << ", ";
-    //     }
+            if (i != varList.size() - 1)
+                fout << ", ";
+        }
         
-    //     fout << "] = ";
-    //     args[1]->dump_to_pyTorch(0, fout);
-    // }
-    // else {
-    //     fout << indent;
-    //     lhs->convert_to_triton_host(0, fout);
-    //     fout << " = ";
-    //     if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.tensor.create") {
-    //         deviceMemoryPtr.insert(lhs->to_string());
-    //     }
-    //     value->convert_to_triton_host(0, fout);
-    // }
+        fout << "] = ";
+        args[1]->dump_to_pyTorch(0, fout);
+    }
+    else {
+        fout << indent;
+        lhs->convert_to_triton_host(0, fout);
+        fout << " = ";
+        if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.tensor.create") {
+            deviceMemoryPtr[lhs->to_string()] = std::vector<std::string>();
+        }
+        value->convert_to_triton_host(0, fout);
+    }
 }
 
 void PTO_VARIABLE::convert_to_triton_host(int depth, std::ofstream& fout) const {
-    // std::string indent(depth, '\t');
-    // fout << indent << varName;
+    std::string indent(depth, '\t');
+    fout << indent << varName;
 }
 
 void PTO_CALL::convert_to_triton_host(int depth, std::ofstream& fout) const {
-    // std::string indent(depth, '\t');
-    // fout << indent;
+    std::string indent(depth, '\t');
+    fout << indent;
 
-    // if (funcName.substr(0, 5) == "self.") {
-    //     // 从这调用的说明grid大小是1
-    //     fout << funcName.substr(5) << "[(1, )](";
+    if (funcName.substr(0, 5) == "self.") {
+        fout << funcName.substr(5) << "[(";
+
+        // 处理grid的大小
+        if (programIDInfo.find(funcName.substr(5)) == programIDInfo.end()) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+        const auto& curProgramIDInfo = programIDInfo[funcName.substr(5)];
+        std::vector<int> grid(curProgramIDInfo.size(), 0);
         
-    //     // 先确定入参
-    //     for (const auto& arg : arguments) {
-    //         fout << arg->to_string() << ", ";
-    //         if (arg->get_data_type().kind == PTO_TYPE_KIND::TENSOR) {
-    //             // 必须是二维
-    //             if (arg->get_data_type().shape.size() != 2) {
-    //                 SPDLOG_ERROR("Only support two-dimensional tensor");
-    //                 return;
-    //             }
-    //             fout << arg->to_string() << ".stride(0), " << arg->to_string() << ".stride(1), ";
-    //         }
-    //     }
+        for (const auto& it : curProgramIDInfo) {
+            if (it.second.range != -1) {
+                grid[it.second.axis] = it.second.range;
+            } else {
+                if (it.second.rangePerCall.find(this) == it.second.rangePerCall.end()) {
+                    SPDLOG_ERROR("Unexpected Error");
+                    return;
+                }
+                grid[it.second.axis] = it.second.rangePerCall.find(this)->second;
+            }
+        }
+        
+        // 表明这个kernel函数没有被嵌入在任何一个parallel循环里
+        if (grid.size() == 0) {
+            grid.emplace_back(1);
+        }
 
-    //     // 输出结果的参数在调用这个函数的地方处理
-    // }
-    // else if (funcName == "pypto.language.tensor.create") {
-    //     fout << "torch.empty(";
-    //     arguments[0]->dump_to_pyTorch(0, fout);
-    //     fout << ", ";
-    //     arguments[1]->dump_to_pyTorch(0, fout);
-    //     fout << ", ";
-    //     arguments[2]->dump_to_pyTorch(0, fout);
-    //     fout << ", ";
-    //     fout << "device = 'cuda')";
-    // }
-    // else {
-    //     this->dump_to_pyTorch(0, fout);
-    // }
+        for (const auto& g : grid) {
+            fout << g << ", ";
+        }
+        fout << ")](";
+        
+        // 确定入参
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            if (curProgramIDInfo.find(i) != curProgramIDInfo.end()) {
+                // 这个参量是通过program ID传入的
+                continue;
+            }
+            fout << arguments[i]->to_string() << ", ";
+            if (arguments[i]->get_data_type().kind == PTO_TYPE_KIND::TENSOR) {
+                // 必须是二维
+                if (arguments[i]->get_data_type().shape.size() != 2) {
+                    SPDLOG_ERROR("Only support two-dimensional tensor");
+                    return;
+                }
+                fout << arguments[i]->to_string() << ".stride(0), " << arguments[i]->to_string() << ".stride(1), ";
+            }
+        }
 
+        // 输出结果的参数在调用这个函数的地方处理
+    }
+    else if (funcName == "pypto.language.tensor.create") {
+        fout << "torch.empty(";
+        arguments[0]->dump_to_pyTorch(0, fout);
+        fout << ", ";
+        arguments[1]->dump_to_pyTorch(0, fout);
+        fout << ", ";
+        arguments[2]->dump_to_pyTorch(0, fout);
+        fout << ", ";
+        fout << "device = 'cuda')";
+    }
+    else {
+        this->dump_to_pyTorch(0, fout);
+    }
 }
 
 void PTO_FOR_LOOP::convert_to_triton_host(int depth, std::ofstream& fout) const {
-    // std::string indent(depth, '\t');
-
-    // // 特殊情况处理
-    // if (info->get_func_name() == "pypto.language.parallel" && statements.size() == 1) {
-    //     // 有可能是kernel调用
-    //     if (statements[0]->type() == PTO_NODE_TYPE::ASSIGNMENT && ((PTO_ASSIGNMENT*)statements[0])->get_value()->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)((PTO_ASSIGNMENT*)statements[0])->get_value())->get_func_name().substr(0, 5) == "self.") {
-    //         auto lhs = ((PTO_ASSIGNMENT*)statements[0])->get_lhs();
-    //         auto kernelPtr = (PTO_CALL*)((PTO_ASSIGNMENT*)statements[0])->get_value();
-
-    //         if (lhs->type() == PTO_NODE_TYPE::VARIABLE || lhs->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
-    //             const auto& lhsDataType = lhs->get_data_type();
-
-    //             if (lhsDataType.shape.size() != 2) {
-    //                 SPDLOG_ERROR("Only support two-dimensional tensor");
-    //                 return;
-    //             }
-
-    //             std::string lhsTensorType;
-    //             if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::BF16) {
-    //                 lhsTensorType = "bfloat16";
-    //             }
-    //             else if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::FP32) {
-    //                 lhsTensorType = "float32";
-    //             }
-    //             else {
-    //                 SPDLOG_ERROR("Unsupported data type");
-    //                 return;
-    //             }
-
-    //             create_device_memory_on_host(indent, fout, lhs->to_string(), lhsDataType.shape, lhsTensorType);
-
-    //             fout << indent;
-    //             fout << kernelPtr->get_func_name().substr(5) << "[(";
-
-    //             // 确认不同axis的具体数值
-    //             if (programIdArg.find(kernelPtr->get_func_name().substr(5)) == programIdArg.end()) {
-    //                 SPDLOG_ERROR("Unexpected Error");
-    //                 return;
-    //             }
-
-    //             auto& programIDInfo = programIdArg[kernelPtr->get_func_name().substr(5)];
-    //             std::vector<int> grid(programIDInfo.size(), 0);
-
-    //             // 循环变量的维度
-    //             grid[programIDInfo[iter->to_string()].axis] = std::stoi(info->get_arguments()[0]->to_string());
-
-    //             for (const auto& id : programIDInfo) {
-    //                 if (id.second.range != -1) {
-    //                     grid[id.second.axis] = id.second.range;
-    //                 }
-    //             }
-
-    //             for (const auto& v : grid) {
-    //                 fout << v << ", ";
-    //             }
-    //             fout << ")](";
-
-    //             // 处理入参
-    //             for (const auto& arg : kernelPtr->get_arguments()) {
-    //                 if (programIDInfo.find(arg->to_string()) != programIDInfo.end()) {
-    //                     continue;
-    //                 }
-
-    //                 if (arg->get_data_type().kind == PTO_TYPE_KIND::TENSOR) {
-    //                     if (arg->get_data_type().shape.size() != 2) {
-    //                         SPDLOG_ERROR("Only support two-dimensional tensor");
-    //                         return;
-    //                     }
-    //                     fout << arg->to_string() << ", " << arg->to_string() << ".stride(0), " << arg->to_string() << ".stride(1), ";
-    //                 }
-    //                 else if (arg->get_data_type().kind == PTO_TYPE_KIND::INT32) {
-    //                     fout << arg->to_string() << ", ";
-    //                 }
-    //                 else {
-    //                     SPDLOG_ERROR("Unsupported type {}", arg->get_data_type().to_string());
-    //                 }
-    //             }
-
-    //             if (kernelOutputPtr.find(kernelPtr->get_func_name().substr(5)) != kernelOutputPtr.end() && kernelOutputPtr[kernelPtr->get_func_name().substr(5)].find(0) != kernelOutputPtr[kernelPtr->get_func_name().substr(5)].end()) {
-    //                 // 处理输出
-    //                 fout << lhs->to_string() << ", " << lhs->to_string() << ".stride(0), " << lhs->to_string() << ".stride(1)";
-    //             }
-    //             fout << ")";
-    //         }
-    //         else if (lhs->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
-    //             // 要求每个子类型都是tensor
-    //             for (const auto& var : ((PTO_TUPLE_VAR*)lhs)->get_var_list()) {
-    //                 const auto& lhsDataType = var->get_data_type();
-
-    //                 if (lhsDataType.shape.size() != 2) {
-    //                     SPDLOG_ERROR("Only support two-dimensional tensor");
-    //                     return;
-    //                 }
-
-    //                 std::string lhsTensorType;
-    //                 if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::BF16) {
-    //                     lhsTensorType = "bfloat16";
-    //                 }
-    //                 else if (lhsDataType.sub_types[0].kind == PTO_TYPE_KIND::FP32) {
-    //                     lhsTensorType = "float32";
-    //                 }
-    //                 else {
-    //                     SPDLOG_ERROR("Unsupported data type");
-    //                     return;
-    //                 }
-
-    //                 create_device_memory_on_host(indent, fout, var->to_string(), lhsDataType.shape, lhsTensorType);
-
-    //             }
-
-    //             fout << indent << kernelPtr->get_func_name().substr(5) << "[(";
-
-    //             // 确认不同axis的具体数值
-    //             if (programIdArg.find(kernelPtr->get_func_name().substr(5)) == programIdArg.end()) {
-    //                 SPDLOG_ERROR("Unexpected Error");
-    //                 return;
-    //             }
-
-    //             auto& programIDInfo = programIdArg[kernelPtr->get_func_name().substr(5)];
-    //             std::vector<int> grid(programIDInfo.size(), 0);
-
-    //             // 循环变量的维度
-    //             grid[programIDInfo[iter->to_string()].axis] = std::stoi(info->get_arguments()[0]->to_string());
-
-    //             for (const auto& id : programIDInfo) {
-    //                 if (id.second.range != -1) {
-    //                     grid[id.second.axis] = id.second.range;
-    //                 }
-    //             }
-
-    //             for (const auto& v : grid) {
-    //                 fout << v << ", ";
-    //             }
-    //             fout << ")](";
-
-    //             // 处理入参
-    //             for (const auto& arg : kernelPtr->get_arguments()) {
-    //                 if (programIDInfo.find(arg->to_string()) != programIDInfo.end()) {
-    //                     continue;
-    //                 }
-
-    //                 if (arg->get_data_type().kind == PTO_TYPE_KIND::TENSOR) {
-    //                     if (arg->get_data_type().shape.size() != 2) {
-    //                         SPDLOG_ERROR("Only support two-dimensional tensor");
-    //                         return;
-    //                     }
-    //                     fout << arg->to_string() << ", " << arg->to_string() << ".stride(0), " << arg->to_string() << ".stride(1), ";
-    //                 }
-    //                 else if (arg->get_data_type().kind == PTO_TYPE_KIND::INT32) {
-    //                     fout << arg->to_string() << ", ";
-    //                 }
-    //                 else {
-    //                     SPDLOG_ERROR("Unsupported type {}", arg->get_data_type().to_string());
-    //                 }
-    //             }
-
-    //             if (kernelOutputPtr.find(kernelPtr->get_func_name().substr(5)) != kernelOutputPtr.end() && kernelOutputPtr[kernelPtr->get_func_name().substr(5)].find(0) != kernelOutputPtr[kernelPtr->get_func_name().substr(5)].end()) {
-    //                 // 处理输出
-    //                 fout << lhs->to_string() << ", " << lhs->to_string() << ".stride(0), " << lhs->to_string() << ".stride(1)";
-    //             }
-    //             fout << ")";
-    //         }
-    //         else {
-    //             SPDLOG_ERROR("Unimplemented");
-    //             return;
-    //         }
-            
-
-    //         return;
-    //     }
-    // }
-
-    // // 处理成串行的for loop
-    // fout << indent << "for ";
-    // iter->dump_to_pyTorch(0, fout);
-    // fout << " in range(";
-    // for (const auto& arg : info->get_arguments()) {
-    //     if (arg->type() != PTO_NODE_TYPE::KEYWORD) {
-    //         arg->dump_to_pyTorch(0, fout);
-    //         fout << ", ";
-    //     }
-    // }
-    // fout << "):" << std::endl;
-    // for (const auto& s : statements) {
-    //     s->convert_to_triton_host(depth + 1, fout);
-    //     fout << std::endl;
-    // }
+    std::string indent(depth, '\t');
+    // 处理成串行的for loop
+    fout << indent << "for ";
+    iter->dump_to_pyTorch(0, fout);
+    fout << " in range(";
+    for (const auto& arg : info->get_arguments()) {
+        if (arg->type() != PTO_NODE_TYPE::KEYWORD) {
+            arg->dump_to_pyTorch(0, fout);
+            fout << ", ";
+        }
+    }
+    fout << "):" << std::endl;
+    for (const auto& s : statements) {
+        s->convert_to_triton_host(depth + 1, fout);
+        fout << std::endl;
+    }
 }
 
 void PTO_BINARY_OP::convert_to_triton_host(int depth, std::ofstream& fout) const {
-    // // 直接调用torch的版本
-    // this->dump_to_pyTorch(depth, fout);
+    // 直接调用torch的版本
+    this->dump_to_pyTorch(depth, fout);
 }
 
 void PTO_RETURN::convert_to_triton_host(int depth, std::ofstream& fout) const {
-    // // 直接调用torch的版本
-    // this->dump_to_pyTorch(depth, fout);
+    // 直接调用torch的版本
+    this->dump_to_pyTorch(depth, fout);
 }
     
 } // namespace pto_parser

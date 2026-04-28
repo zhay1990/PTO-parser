@@ -137,17 +137,17 @@ int main(int argc, char** argv) {
 
     module->convert_to_triton(tritonFile.string());
 
-    std::ofstream fout2(ptoFile, std::ios::out);
+    // std::ofstream fout2(ptoFile, std::ios::out);
 
-    if (!fout2.is_open()) {
-        SPDLOG_ERROR("Failed to open file: {}", ptoFile.string());
-        delete module;
-        return 1;
-    }
+    // if (!fout2.is_open()) {
+    //     SPDLOG_ERROR("Failed to open file: {}", ptoFile.string());
+    //     delete module;
+    //     return 1;
+    // }
 
-    module->dump(0, fout2);
+    // module->dump(0, fout2);
 
-    fout2.close();
+    // fout2.close();
 
     // Clean up
     delete module;
