@@ -110,6 +110,14 @@ void PTO_CALL::dump_to_pyTorch(int depth, std::ofstream& fout) const {
             size = ((PTO_LIST_VAR*)arguments[1])->get_var_list();
         }
 
+        if (arguments.size() == 4) {
+            if (arguments[3]->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+                size = ((PTO_TUPLE_VAR*)arguments[3])->get_var_list();
+            } else {
+                size = ((PTO_LIST_VAR*)arguments[3])->get_var_list();
+            }
+        }
+
         if (arguments[2]->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
             offset = ((PTO_TUPLE_VAR*)arguments[2])->get_var_list();
         } else {

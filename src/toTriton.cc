@@ -21,7 +21,9 @@ struct PROGRAM_ID{
 // 第一个index是kernel函数的名字，第二个index是入参的序号
 static std::unordered_map<std::string, std::unordered_map<int, struct PROGRAM_ID>> programIDInfo;
 
-
+////////////////////////////////////////////////
+// 以下是用于处理device memory加载的辅助数据结构
+////////////////////////////////////////////////
 // 入参里的tensor都是deviceMemory的指针
 static std::unordered_map<std::string, std::vector<std::string>> deviceMemoryPtr;
 // 记录当前kernel函数内哪些devicememory指针被直接使用
@@ -36,6 +38,34 @@ static std::unordered_set<std::string> kernelUsedVarName;
 static std::unordered_set<std::string> localVar;
 
 
+////////////////////////////////////////////
+// 以下是用于处理tensor的尺寸不是二的冥的情况
+////////////////////////////////////////////
+// 记录每个tensor在PTO源码中的shape，可以不是二的冥，是有效数据的大小
+static std::unordered_map<std::string, std::vector<int>> tensorOriginalShape;
+// 记录每个tensor在生成的triton代码中的shape，必须是二的冥，包含无效数据，无效数据默认都设为0
+static std::unordered_map<std::string, std::vector<int>> tensorActualShape;
+// 如果tensor的某个维度是动态维度，则在original shape中用-1表示，使用的变量在这个里面记录
+static std::unordered_map<std::string, std::vector<std::string>> tensorDynamicShape;
+
+static inline bool is_power_of_two(int n) {
+    return n > 0 && (n & (n - 1)) == 0;
+}
+
+static inline int next_power_of_two(int n) {
+    n--; 
+    
+    // 把最高位的 1 向右“抹平”
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    
+    // 此时 n 的二进制变成了 000...01111111
+    // 加 1 就会进位，变成 000...10000000，完美得到 2 的幂
+    return n + 1;
+}
 
 static const std::string generate_offset(PTO_LIST_VAR* subShape, PTO_LIST_VAR* startPos, const std::string& tensorName) {
     std::stringstream ret;
@@ -59,6 +89,186 @@ static const std::string generate_offset(const std::vector<int>& subShape, const
         " + (tl.arange(0, " << subShape[1] << "))[None, :] * " << deviceMemoryPtr[tensorName][2];
 
     return ret.str();
+}
+
+static const std::string generate_mask(const std::vector<int>& subShape, PTO_LIST_VAR* validRegion) {
+    if (subShape.size() != 2 || validRegion->get_var_list().size() != 2) {
+        SPDLOG_ERROR("Only support two-dimensional tensor");
+        return "";
+    }
+
+    std::stringstream ret;
+
+    ret << "((tl.arange(0, " << subShape[0] << "))[:, None] < " << validRegion->get_var_list()[0]->to_string() << ") & " <<
+           "((tl.arange(0, " << subShape[1] << "))[None, :] < " << validRegion->get_var_list()[1]->to_string() << ")";
+
+    return ret.str();
+}
+
+static const std::string generate_mask(PTO_LIST_VAR* subShape, PTO_LIST_VAR* startPos, const std::string& srcTensor) {
+    if (subShape->get_var_list().size() != 2 || startPos->get_var_list().size() != 2) {
+        SPDLOG_ERROR("Only support two-dimensional tensor");
+        return "";
+    }
+
+    std::stringstream ret;
+    ret << "((tl.arange(0, " << srcTensor << ".shape(0)) >= " << startPos->get_var_list()[0]->to_string() << ") & (tl.arange(0, " << 
+                                srcTensor << ".shape(0)) < " << startPos->get_var_list()[0]->to_string() << " + " << subShape->get_var_list()[0]->to_string() << "))[:, None] & " <<
+           "((tl.arange(0, " << srcTensor << ".shape(1)) >= " << startPos->get_var_list()[1]->to_string() << ") & (tl.arange(0, " << 
+                                srcTensor << ".shape(1)) < " << startPos->get_var_list()[1]->to_string() << " + " << subShape->get_var_list()[1]->to_string() << "))[None, :]";
+
+    return ret.str();
+}
+
+static void gen_triton_load(std::ofstream& fout, const int& depth, const std::string& varName) {
+    const std::string indent(depth, '\t');
+
+    if (deviceMemoryPtr.find(varName) == deviceMemoryPtr.end()) {
+        SPDLOG_ERROR("Unexpected Error");
+        return;
+    }
+
+    if (tensorOriginalShape.find(varName) == tensorOriginalShape.end()) {
+        SPDLOG_ERROR("Unexpected Error");
+        return;
+    }
+
+    if (tensorDynamicShape.find(varName) == tensorDynamicShape.end()) {
+        SPDLOG_ERROR("Unexpected Error");
+        return;
+    }
+
+    // 暂时只支持二维tensor
+    const auto& originalShape = tensorOriginalShape[varName];
+    if (originalShape.size() != 2) {
+        SPDLOG_ERROR("Only support two-dimensional tensor");
+        return;
+    }
+
+    // shape都是二的冥
+    if (is_power_of_two(originalShape[0]) && is_power_of_two(originalShape[1])) {
+        // actual shape和original shape相同
+        tensorActualShape[varName] = originalShape;
+
+        // 只用生成offset，不用生成mask
+        auto offsetName = varName + "_offset";
+        while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+            offsetName += '_';
+        }
+        kernelUsedVarName.insert(offsetName);
+        fout << indent << "# 实际尺寸和原始尺寸一致, 不需要mask" << std::endl;
+        fout << indent << offsetName << " = " << generate_offset(originalShape, varName) << std::endl;
+        fout << indent << varName << " = tl.load(" << deviceMemoryPtr[varName][0] << " + " << offsetName << ")" << std::endl;
+    } else {
+        SPDLOG_ERROR("Unimplemented");
+        return;
+    }
+}
+
+static void gen_triton_load(std::ofstream& fout, const int& depth, const std::string& dstName, const std::string& srcName, PTO_LIST_VAR* subShape, PTO_LIST_VAR* startPos, PTO_LIST_VAR* tensorView) {
+    const std::string indent(depth, '\t');
+
+    // 强制要求是二维tensor
+    if (subShape->get_var_list().size() != 2 || subShape->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT || subShape->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
+        SPDLOG_ERROR("Only support two-dimensional tensor");
+        return;
+    }
+
+    if (startPos->get_var_list().size() != 2) {
+        SPDLOG_ERROR("Only support two-dimensional tensor");
+        return;
+    }
+
+    const auto& dstShape = subShape->get_var_list();
+    const auto& start    = startPos->get_var_list();
+
+    if (tensorView != nullptr) {
+        // 有效数据的范围是基于tensorView确定，subShape的尺寸应当大于tensorView，这里无法做检查，因为tensorView的值可能是动态确定的
+        // 基于subShape生成对应的actual size，基于tensorView生成original size
+        
+        // 先基于subShape生成offset，这里需要判断是否是2的冥
+        std::string offsetName = dstName + "_offset";
+        while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+            offsetName += '_';
+        }
+        kernelUsedVarName.insert(offsetName);
+        if (is_power_of_two(std::stoi(dstShape[0]->to_string())) && is_power_of_two(std::stoi(dstShape[1]->to_string()))) {
+            fout << indent << offsetName << " = " << generate_offset(subShape, startPos, srcName) << std::endl;
+
+            tensorActualShape[dstName] = {std::stoi(dstShape[0]->to_string()), std::stoi(dstShape[1]->to_string())};
+        }
+        else {
+            // 不应该有动态shape，dst的shape应当是静态确定的
+            if (std::stoi(dstShape[0]->to_string()) == -1 || std::stoi(dstShape[1]->to_string()) == -1) {
+                SPDLOG_ERROR("Unexpected Error");
+                return;
+            }
+
+            std::vector<int> actualShape = {next_power_of_two(std::stoi(dstShape[0]->to_string())), next_power_of_two(std::stoi(dstShape[1]->to_string()))};
+
+            fout << indent << "# " << dstName << "的shape从[" << dstShape[0]->to_string() << ", " << dstShape[1]->to_string() << "]拓展成了[" << actualShape[0] << ", " << actualShape[1] << "], 多出来的数据填0" << std::endl;
+            fout << indent << offsetName << " = " << generate_offset(actualShape, startPos, srcName) << std::endl;
+
+            tensorActualShape[dstName] = actualShape;
+        }
+
+        // 根据tensorView包含的有效数据范围生成Mask
+        std::string maskName = dstName + "_mask";
+        while (kernelUsedVarName.find(maskName) != kernelUsedVarName.end()) {
+            maskName += "_";
+        }
+        kernelUsedVarName.insert(maskName);
+
+        fout << indent << "# 基于有效数据范围[" << tensorView->get_var_list()[0]->to_string() << ", " << tensorView->get_var_list()[1]->to_string() << "]生成Mask" << std::endl;
+        fout << indent << maskName << " = " << generate_mask(tensorActualShape[dstName], tensorView) << std::endl;
+
+        // 记录这个tensor有数据的范围
+        std::vector<int> validShape;
+        std::vector<std::string> dynamicShape;
+        if (tensorView->get_var_list()[0]->type() == PTO_NODE_TYPE::INT_CONSTANT) {
+            validShape.emplace_back(std::stoi(tensorView->get_var_list()[0]->to_string()));
+            dynamicShape.emplace_back("");
+        } else {
+            // 是一个动态shape
+            validShape.emplace_back(-1);
+            dynamicShape.emplace_back(tensorView->get_var_list()[0]->to_string());
+        }
+        if (tensorView->get_var_list()[1]->type() == PTO_NODE_TYPE::INT_CONSTANT) {
+            validShape.emplace_back(std::stoi(tensorView->get_var_list()[1]->to_string()));
+            dynamicShape.emplace_back("");
+        } else {
+            // 是一个动态shape
+            validShape.emplace_back(-1);
+            dynamicShape.emplace_back(tensorView->get_var_list()[1]->to_string());
+        }
+
+        // 生成load
+        fout << indent << dstName << " = tl.load(" << deviceMemoryPtr[srcName][0] << " + " << offsetName << ", mask=" << maskName << ", other=0.0)";
+    } else {
+        // 没有tensorView，所以有效数据的范围就是根据subShape生成
+        if (is_power_of_two(std::stoi(dstShape[0]->to_string())) && is_power_of_two(std::stoi(dstShape[1]->to_string()))) {
+            // subShape是2的冥，所有有效数据和实际tensor大小是一致的
+            fout << indent << "# 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask" << std::endl;
+            // 生成offset
+            std::string offsetName = dstName + "_offset";
+            while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                offsetName += '_';
+            }
+            kernelUsedVarName.insert(offsetName);
+
+            fout << indent << offsetName << " = " << generate_offset(subShape, startPos, srcName) << std::endl;
+
+            // 不生成mask
+            fout << indent << dstName << " = tl.load(" << deviceMemoryPtr[srcName][0] << " + " << offsetName << ")";
+
+            // 存下这个tensor的尺寸
+            tensorOriginalShape[dstName] = {std::stoi(dstShape[0]->to_string()), std::stoi(dstShape[1]->to_string())};
+            tensorActualShape[dstName] = {std::stoi(dstShape[0]->to_string()), std::stoi(dstShape[1]->to_string())};
+            tensorDynamicShape[dstName] = {"", ""};
+        } else {
+            SPDLOG_ERROR("Unimplemented for not power of two");
+        }
+    }
 }
 
 void PTO_MODULE::convert_to_triton(const std::string& fileName) const {
@@ -276,6 +486,10 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
     kernelUsedVarName.clear();
     localVar.clear();
 
+    tensorOriginalShape.clear();
+    tensorActualShape.clear();
+    tensorDynamicShape.clear();
+
     std::vector<std::string> programIDName(curProgramIDInfo.size(), "");
 
     // 先记录deviceMemory的名字
@@ -308,6 +522,10 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
 
             // 先记录这个变量名字，等扫描完成再确定生成的名字
             deviceMemoryPtr[arguments[i]->to_string()] = std::vector<std::string>();
+
+            // 记录这个变量的实际大小
+            tensorOriginalShape[arguments[i]->to_string()] = argType.shape;
+            tensorDynamicShape[arguments[i]->to_string()] = argType.dynamicShape;
         }
     }
 
@@ -440,27 +658,7 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
 
     // 对于直接只用的device memory生成tl.load
     for (const auto& var : directUsedDeviceMemory) {
-        // 需要生成加载用的offset
-        if (deviceMemoryType.find(var) == deviceMemoryType.end()) {
-            SPDLOG_ERROR("Unexpected Error");
-            return;
-        }
-
-        const auto& tensorType = deviceMemoryType[var];
-        if (tensorType.kind != PTO_TYPE_KIND::TENSOR || tensorType.shape.size() != 2) {
-            SPDLOG_ERROR("Only support two-dimensional tensor");
-            return;
-        }
-
-        std::string offsetName = var + "_offset";
-        while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
-            offsetName += '_';
-        }
-        kernelUsedVarName.insert(offsetName);
-
-        fout << indent << "\t" << offsetName << " = " << generate_offset(tensorType.shape, var) << std::endl;
-
-        fout << indent << "\t" << var << " = tl.load(" << deviceMemoryPtr[var][0] << " + " << offsetName << ")" << std::endl;
+        gen_triton_load(fout, depth + 1, var);
     }
     
     // 逐个生成statement，在这个过程中需要记录有哪些variable是在local memory中，如果这个variable出现在return中时，
@@ -487,6 +685,11 @@ void PTO_ASSIGNMENT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
             const auto subShape = (PTO_LIST_VAR*)funcPtr->get_arguments()[1];
             const auto startPos = (PTO_LIST_VAR*)funcPtr->get_arguments()[2];
 
+            PTO_LIST_VAR* tensorView = nullptr;
+            if (funcPtr->get_arguments().size() == 4) {
+                tensorView = (PTO_LIST_VAR*)funcPtr->get_arguments()[3];
+            }
+
             if (subShape->get_var_list().size() != 2) {
                 SPDLOG_ERROR("Only support two-dimensional tensor");
                 return;
@@ -495,22 +698,41 @@ void PTO_ASSIGNMENT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
             if (deviceMemoryPtr.find(tensorName) != deviceMemoryPtr.end()) {
                 // 是从device memory加载回来的local变量
                 // 在这个statement时，虽然这个变量存在于local memory中，但其值没有发生改变，所以先不需要存于localVar中
-                // 先生成所需要的offset变量
-                std::string offsetName = lhs->to_string() + "_offset";
-                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
-                    offsetName += '_';
-                }
-                kernelUsedVarName.insert(offsetName);
-                fout << indent << offsetName << " = " << generate_offset(subShape, startPos, tensorName) << std::endl;
-                fout << indent << lhs->to_string() << " = tl.load(" << deviceMemoryPtr[tensorName][0] << " + " << offsetName << ")";
+                gen_triton_load(fout, depth, lhs->to_string(), tensorName, subShape, startPos, tensorView);
             }
             else {
+                if (tensorView != nullptr) {
+                    // 在qwen3 decode layer中没遇到该情况
+                    SPDLOG_ERROR("Unexpected Error");
+                    return;
+                }
+
                 // 是从local memory到local memory的变量赋值
-                // 认为左侧的变量是新的
+                // 认为左侧的变量是新的寄存器的值
                 localVar.insert(lhs->to_string());
-                fout << indent << lhs->to_string() << " = " << tensorName << "[" <<
-                    startPos->get_var_list()[0]->to_string() << ": " << startPos->get_var_list()[0]->to_string() << " + " << subShape->get_var_list()[0]->to_string() << ", " <<
-                    startPos->get_var_list()[1]->to_string() << ": " << startPos->get_var_list()[1]->to_string() << " + " << subShape->get_var_list()[1]->to_string() << "]";
+
+                // 如果subShape不是2的冥的话，使用tl.where处理
+                if (subShape->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT || !is_power_of_two(std::stoi(subShape->get_var_list()[0]->to_string())) || 
+                    subShape->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT || !is_power_of_two(std::stoi(subShape->get_var_list()[1]->to_string()))) {
+                    
+                    // 需要先生成mask
+                    std::string maskName = lhs->to_string() + "_mask";
+                    while (kernelUsedVarName.find(maskName) != kernelUsedVarName.end()) {
+                        maskName += '_';
+                    }
+                    kernelUsedVarName.insert(maskName);
+                    
+                    fout << indent << "# 基于初始位置[" << startPos->get_var_list()[0]->to_string() << ", " << startPos->get_var_list()[1]->to_string() << "]和tensor形状[" <<
+                                                        subShape->get_var_list()[0]->to_string() << ", " << subShape->get_var_list()[1]->to_string() << "]生成tl.where使用的Mask" << std::endl;
+                    fout << indent << maskName << " = " << generate_mask(subShape, startPos, tensorName) << std::endl;
+                    fout << indent << "# 使用where替换slice, Mask以外的数据填0" << std::endl;
+                    fout << indent << lhs->to_string() << " = tl.where(" << maskName << ", " << tensorName << ", 0.0)";
+                }
+                else {
+                    // 直接切分
+                    SPDLOG_ERROR("Slice from non-device memory ptr at line {} cannot be converted to triton", row_);
+                    return;
+                }
             }
             // 处理完毕
             return;
