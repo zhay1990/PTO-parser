@@ -519,12 +519,26 @@ void PTO_ASSIGNMENT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
             if (deviceMemoryPtr.find(lhs->to_string()) != deviceMemoryPtr.end()) {
                 // 对于A = pl.assemble(B, C, [startPos])
                 // 如果B是个存在于local memory中的变量，则无论A是否等于B，等先需要一个tl.store将B存入A的位置
+                // 如果B是个存在于device memory中的变量，但A不等于B，也需要一个tl.store将B存入A的位置
                 // 之后再计算C的offset，把C存入A的对应位置
                 // 这两部操作后，我们认为A的值已经存在于device memory中了，所以可以从localVar中删除A
                 // 注意，我们不能删除B
                 const auto src0Name = funcPtr->get_arguments()[0]->to_string();
-                if (localVar.find(src0Name) != localVar.end()) {
-                    fout << indent << "tl.store(" << deviceMemoryPtr[lhs->to_string()][0] << ", " << src0Name << ")" << std::endl;
+                if (localVar.find(src0Name) != localVar.end() || src0Name != lhs->to_string()) {
+                    // 需要一个offset
+                    const auto& src0Type = funcPtr->get_arguments()[0]->get_data_type();
+                    if (src0Type.kind != PTO_TYPE_KIND::TENSOR || src0Type.shape.size() != 2) {
+                        SPDLOG_ERROR("Only support two-dimensional tensor");
+                        return;
+                    }
+                    auto offsetName = src0Name + "_offset";
+                    while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                        offsetName += "_";
+                    }
+                    kernelUsedVarName.insert(offsetName);
+
+                    fout << indent << offsetName << " = " << generate_offset(src0Type.shape, src0Name) << std::endl;
+                    fout << indent << "tl.store(" << deviceMemoryPtr[lhs->to_string()][0] << " + " << offsetName << ", " << src0Name << ")" << std::endl;
                 }
 
                 // 拿到subShape
