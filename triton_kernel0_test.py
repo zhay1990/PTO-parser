@@ -1,5 +1,3 @@
-import os
-os.environ["TRITON_INTERPRET"] = "1"
 import triton
 import triton.language as tl
 import torch
@@ -28,7 +26,7 @@ def qwen3_decode_layer_incore_0(
     tl.store(inv_rms_0_ptr + inv_rms_0_offset, inv_rms_0)
 
 def qwen3_decode_layer_incore_0_torch(hidden_states_0):
-    sq_sum_0 = torch.empty([16, 1], dtype = torch.float32, layout = torch.strided)
+    sq_sum_0 = torch.empty([16, 1], dtype = torch.float32, layout = torch.strided, device='cuda')
     sq_sum_1 = torch.mul(sq_sum_0, 0)
     for kb_0 in range(20):
         k0_0 = (kb_0 * 256)
@@ -43,11 +41,12 @@ def qwen3_decode_layer_incore_0_torch(hidden_states_0):
     return inv_rms_0
 
 if __name__ == '__main__':
-    hidden_states_0 = torch.rand([16, 5120], dtype = torch.bfloat16)
-    inv_rms_0 = torch.empty([16, 1], dtype = torch.float32)
+    hidden_states_0 = torch.rand([16, 5120], dtype = torch.bfloat16, device='cuda')
+    inv_rms_0 = torch.empty([16, 1], dtype = torch.float32, device='cuda')
     qwen3_decode_layer_incore_0[(1, )](hidden_states_0, hidden_states_0.stride(0), hidden_states_0.stride(1), inv_rms_0, inv_rms_0.stride(0), inv_rms_0.stride(1), )
 
     inv_rms = qwen3_decode_layer_incore_0_torch(hidden_states_0)
 
+    # 没有太多的计算，精度要求可以高一点
     print(torch.allclose(inv_rms_0, inv_rms, atol=1e-3, rtol=1e-3))
     pass

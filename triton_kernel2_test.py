@@ -1,5 +1,3 @@
-import os
-os.environ["TRITON_INTERPRET"] = "1"
 import triton
 import triton.language as tl
 import torch
@@ -24,8 +22,8 @@ def qwen3_decode_layer_incore_2(
 ):
     ob_1_out = tl.program_id(axis = 0)
     ob_1_in = tl.program_id(axis = 1)
-    inv_rms_offset = (tl.arange(0, 4))[:, None] * inv_rms_tile_0_stride_0
-    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr + inv_rms_offset)
+    inv_rms_tile_0_offset = (tl.arange(0, 4))[:, None] * inv_rms_tile_0_stride_0 + (tl.arange(0, 1))[None, :] * inv_rms_tile_0_stride_1
+    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr + inv_rms_tile_0_offset)
     kv0_0 = ((0 + (((ob_1_out * 8) + ob_1_in) * 1)) * 32)
     k_acc_0 = tl.zeros([4, 32], dtype = tl.float32, )
     v_acc_0 = tl.zeros([4, 32], dtype = tl.float32, )
@@ -56,11 +54,11 @@ def qwen3_decode_layer_incore_2(
     v_proj_5_offset = (b0_0 + tl.arange(0, 4))[:, None] * v_proj_5_stride_0 + (kv0_0 + tl.arange(0, 32))[None, :] * v_proj_5_stride_1
     tl.store(v_proj_5_ptr + v_proj_5_offset, _t13)
 
-def qwen3_decode_layer_incore_2_torch(self, b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, k_proj_5, ob_1_out, v_proj_5, wk_0, wv_0):
+def qwen3_decode_layer_incore_2_torch(b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, k_proj_5, ob_1_out, v_proj_5, wk_0, wv_0):
     for ob_1_in in range(8):
         kv0_0 = ((0 + (((ob_1_out * 8) + ob_1_in) * 1)) * 32)
-        k_acc_0 = torch.empty([4, 32], dtype = torch.float32, layout = torch.strided)
-        v_acc_0 = torch.empty([4, 32], dtype = torch.float32, layout = torch.strided)
+        k_acc_0 = torch.empty([4, 32], dtype = torch.float32, layout = torch.strided, device='cuda')
+        v_acc_0 = torch.empty([4, 32], dtype = torch.float32, layout = torch.strided, device='cuda')
         k_acc_1 = torch.mul(k_acc_0, 0)
         v_acc_1 = torch.mul(v_acc_0, 0)
         for kb_8 in range(20):
@@ -84,18 +82,18 @@ def qwen3_decode_layer_incore_2_torch(self, b0_0, hidden_states_0, input_rms_wei
     return k_proj_5, v_proj_5
 
 if __name__ == '__main__':
-    hidden_states_0 = torch.rand([16, 5120], dtype = torch.bfloat16)
-    input_rms_weight_0 = torch.rand([1, 5120], dtype = torch.float32)
-    inv_rms_0 = torch.rand([4, 1], dtype = torch.float32)
+    hidden_states_0 = torch.rand([16, 5120], dtype = torch.bfloat16, device='cuda')
+    input_rms_weight_0 = torch.rand([1, 5120], dtype = torch.float32, device='cuda')
+    inv_rms_0 = torch.rand([16, 1], dtype = torch.float32, device='cuda')
     
-    k_proj_0 = torch.empty([16, 1024], dtype = torch.bfloat16, layout = torch.strided)
-    v_proj_0 = torch.empty([16, 1024], dtype = torch.bfloat16, layout = torch.strided)
+    k_proj_0 = torch.empty([16, 1024], dtype = torch.bfloat16, layout = torch.strided, device='cuda')
+    v_proj_0 = torch.empty([16, 1024], dtype = torch.bfloat16, layout = torch.strided, device='cuda')
     k_proj_1 = torch.empty_like(k_proj_0)
     v_proj_1 = torch.empty_like(v_proj_0)
 
-    wq_0 = torch.rand([5120, 5120], dtype = torch.bfloat16)
-    wk_0 = torch.rand([5120, 1024], dtype = torch.bfloat16)
-    wv_0 = torch.rand([5120, 1024], dtype = torch.bfloat16)
+    wq_0 = torch.rand([5120, 5120], dtype = torch.bfloat16, device='cuda')
+    wk_0 = torch.rand([5120, 1024], dtype = torch.bfloat16, device='cuda')
+    wv_0 = torch.rand([5120, 1024], dtype = torch.bfloat16, device='cuda')
 
     for b0_0 in range(0, 16, 4, ):
         inv_rms_tile_0 = inv_rms_0[b0_0 : b0_0 + 4, 0 : 0 + 1]
@@ -104,10 +102,10 @@ if __name__ == '__main__':
     for b0_0 in range(0, 16, 4):
         inv_rms_tile_0 = inv_rms_0[b0_0 : b0_0 + 4, 0 : 0 + 1]
         for ob_1_out in range(4):
-            (k_proj_0, v_proj_0, ) = self.qwen3_decode_layer_incore_2_torch(b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, k_proj_1, ob_1_out, v_proj_1, wk_0, wv_0)
+            (k_proj_1, v_proj_1, ) = qwen3_decode_layer_incore_2_torch(b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, k_proj_1, ob_1_out, v_proj_1, wk_0, wv_0)
 
-    print(torch.allclose(k_proj_0, k_proj, atol=1e-3, rtol=1e-3))
-    print(torch.allclose(v_proj_0, v_proj, atol=1e-3, rtol=1e-3))
+    print(torch.allclose(k_proj_0, k_proj_1, atol=1e-2, rtol=1e-2))
+    print(torch.allclose(v_proj_0, v_proj_1, atol=1e-2, rtol=1e-2))
 
 
     pass
