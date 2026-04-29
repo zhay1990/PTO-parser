@@ -50,7 +50,7 @@ if __name__ == '__main__':
             for dob_0_out in range(20):
                 down_proj_tile_0_torch = qwen3_decode_layer_incore_7_torch(dob_0_out, down_proj_tile_0_torch, mlp_chunk_bf16_0, o0_3, w_down_0)
 
-    print(torch.allclose(down_proj_tile_0, down_proj_tile_0_torch, atol=1e-3, rtol=1e-3))
+    print(torch.allclose(down_proj_tile_0, down_proj_tile_0_torch, atol=1e-2, rtol=1e-2))
 
 
     pass

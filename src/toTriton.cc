@@ -180,7 +180,6 @@ static void gen_triton_load(std::ofstream& fout, const int& depth, const std::st
     }
 
     const auto& dstShape = subShape->get_var_list();
-    const auto& start    = startPos->get_var_list();
 
     if (tensorView != nullptr) {
         // 有效数据的范围是基于tensorView确定，subShape的尺寸应当大于tensorView，这里无法做检查，因为tensorView的值可能是动态确定的
@@ -779,6 +778,7 @@ void PTO_ASSIGNMENT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
                 fout << indent << "tl.store(" << deviceMemoryPtr[lhs->to_string()][0] << " + " << offsetName << ", " << funcPtr->get_arguments()[1]->to_string() << ")";
             }
             else {
+                // 需要知道第一个参数和第二个参数的实际尺寸
                 // 做一个强制要求，要求某个维度必须是1
                 const auto& lhsDataType = lhs->get_data_type();
                 if (lhsDataType.kind != PTO_TYPE_KIND::TENSOR || lhsDataType.shape.size() != 2) {
