@@ -319,6 +319,8 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
         s->collect_triton_kernel_info();
     }
 
+    // 这里记录下入参的类型，后面生成tl.load时需要
+    std::unordered_map<std::string, PTO_TYPE> deviceMemoryType;
 
     // 入参里的tensor都处理成device memory指针，生成三个对应入参，xx_ptr, xx_stride_0, xx_stride_1，后两个是用于计算offset
     // 如果出现重名，则在xx_ptr后面加_
@@ -350,6 +352,8 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
 
             fout << indent << "\t#" << arguments[i]->get_type_str()[0] << std::endl;
             fout << indent << "\t" << convertName[0] << ", " << convertName[1] << ", " << convertName[2] << ", " << std::endl;
+
+            deviceMemoryType[arguments[i]->to_string()] = argType;
         }
         else if (argType.kind == PTO_TYPE_KIND::INT32) {
             kernelUsedVarName.insert(arguments[i]->to_string());
@@ -436,7 +440,27 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
 
     // 对于直接只用的device memory生成tl.load
     for (const auto& var : directUsedDeviceMemory) {
-        fout << indent << "\t" << var << " = tl.load(" << deviceMemoryPtr[var][0] << ")" << std::endl;
+        // 需要生成加载用的offset
+        if (deviceMemoryType.find(var) == deviceMemoryType.end()) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+
+        const auto& tensorType = deviceMemoryType[var];
+        if (tensorType.kind != PTO_TYPE_KIND::TENSOR || tensorType.shape.size() != 2) {
+            SPDLOG_ERROR("Only support two-dimensional tensor");
+            return;
+        }
+
+        std::string offsetName = var + "_offset";
+        while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+            offsetName += '_';
+        }
+        kernelUsedVarName.insert(offsetName);
+
+        fout << indent << "\t" << offsetName << " = " << generate_offset(tensorType.shape, var) << std::endl;
+
+        fout << indent << "\t" << var << " = tl.load(" << deviceMemoryPtr[var][0] << " + " << offsetName << ")" << std::endl;
     }
     
     // 逐个生成statement，在这个过程中需要记录有哪些variable是在local memory中，如果这个variable出现在return中时，

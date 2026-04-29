@@ -20,8 +20,8 @@ def qwen3_decode_layer_incore_1(
 ):
     ob_0_out = tl.program_id(axis = 0)
     ob_0_in = tl.program_id(axis = 1)
-    inv_rms_offset = (0 + tl.arange(0, 4))[:, None] * inv_rms_tile_0_stride_0 + (0 + tl.arange(0, 1))[None, :] * inv_rms_tile_0_stride_1
-    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr + inv_rms_offset)
+    inv_rms_tile_0_offset = (tl.arange(0, 4))[:, None] * inv_rms_tile_0_stride_0 + (tl.arange(0, 1))[None, :] * inv_rms_tile_0_stride_1
+    inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr + inv_rms_tile_0_offset)
     q0_0 = ((0 + (((ob_0_out * 4) + ob_0_in) * 1)) * 64)
     q_acc_0 = tl.zeros([4, 64], dtype = tl.float32, )
     q_acc_1 = q_acc_0 * 0
@@ -80,7 +80,7 @@ if __name__ == '__main__':
         for ob_0_out in range(20):
             q_proj_1 = qwen3_decode_layer_incore_1_torch(b0_0, hidden_states_0, input_rms_weight_0, inv_rms_tile_0, ob_0_out, q_proj_1, wq_0)
 
-    print(torch.allclose(q_proj_0, q_proj_1, atol=1e-2, rtol=1e-2))
+    print(torch.allclose(q_proj_0, q_proj_1, atol=1e-3, rtol=1e-3))
     
     diff = torch.abs(q_proj_0.float() - q_proj_1.float())
     rel_diff = diff / (torch.abs(q_proj_1.float()) + 1e-6)
