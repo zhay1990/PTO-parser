@@ -206,4 +206,174 @@ bool PTO_KEYWORD::alias_coalasce() {
     return value->alias_coalasce();
 }
 
+//////////////////////////////////////////
+// 构建kernel函数输入输出的等价关系
+//////////////////////////////////////////
+
+// 记录output到input的映射关系
+static std::unordered_map<std::string, std::unordered_map<int, int>> funcOut2InMap;
+static std::unordered_map<int, int> curOut2InMap;
+// 记录当前函数的输入名字和顺序
+static std::unordered_map<std::string, int> curInputMap;
+
+
+
+void PTO_MODULE::func_input_output_coalasce() const {
+    // 简化处理，假定一个文件只有一个class
+    if (classOrFunc.size() != 1 || classOrFunc[0]->type() != PTO_NODE_TYPE::CLASS) {
+        SPDLOG_ERROR("Only support one class in one file");
+        return;
+    }
+
+    classOrFunc[0]->func_input_output_coalasce();
+}
+
+void PTO_CLASS::func_input_output_coalasce() {
+    for (auto& func : functions) {
+        func->func_input_output_coalasce();
+    }
+}
+
+static void create_assignment(PTO_ASSIGNMENT *assignPtr, std::vector<PTO_BASE*>& statements, int targetIndex) {
+    // 用户自定义函数调用?
+    if (assignPtr->get_value()->type() != PTO_NODE_TYPE::FUNC_CALL) {
+        return;
+    }
+
+    auto funcPtr = (PTO_CALL*)assignPtr->get_value();
+    if (funcPtr->get_func_name().substr(0, 5) != "self.") {
+        return;
+    }
+
+    if (funcOut2InMap.find(funcPtr->get_func_name().substr(5)) == funcOut2InMap.end()) {
+        SPDLOG_ERROR("Unexpected Error");
+        return;
+    }
+
+    const auto& args = funcPtr->get_arguments();
+
+    // 根据output到input的映射关系，添加assign语句
+    for (const auto& it : funcOut2InMap[funcPtr->get_func_name().substr(5)]) {
+        // 找到lhs里第it.first的变量名
+        PTO_VARIABLE *lhs = nullptr, *rhs = nullptr;
+
+        auto lhsPtr = assignPtr->get_lhs();
+
+        if (lhsPtr->type() == PTO_NODE_TYPE::VARIABLE || lhsPtr->type() == PTO_NODE_TYPE::TYPED_VARIABLE) {
+            // 左侧只有一个输出
+            if (it.first != 0) {
+                SPDLOG_ERROR("Unexpected Error");
+                return;
+            }
+            lhs = new PTO_VARIABLE(lhsPtr->to_string(), lhsPtr->row(), lhsPtr->col());
+            lhs->add_type_str(((PTO_VARIABLE*)lhsPtr)->get_type_str()[0]);
+        }
+        else if (lhsPtr->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+            const auto& varList = ((PTO_TUPLE_VAR*)lhsPtr)->get_var_list();
+            if (it.first >= (int)varList.size()) {
+                SPDLOG_ERROR("Unexpected Error");
+                return;
+            }
+
+            lhs = new PTO_VARIABLE(varList[it.first]->to_string(), varList[it.first]->row(), varList[it.first]->col());
+            lhs->add_type_str(((PTO_VARIABLE*)varList[it.first])->get_type_str()[0]);
+        }
+        else {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+
+        if (it.second >= (int)args.size()) {
+            SPDLOG_ERROR("Unexpected Error");
+            return;
+        }
+
+        if (args[it.second]->type() == PTO_NODE_TYPE::VARIABLE) {
+            rhs = new PTO_VARIABLE(args[it.second]->to_string(), args[it.second]->row(), args[it.second]->col());
+        }
+        else {
+            SPDLOG_ERROR("Unimplemented");
+            return;
+        }
+
+        auto newAssign = new PTO_ASSIGNMENT(lhs, lhs->row(), lhs->col());
+        newAssign->set_value(rhs);
+
+        statements.insert(statements.begin() + targetIndex, newAssign);
+    }
+}
+
+void PTO_FUNC::func_input_output_coalasce() {
+    // 先记录入参的顺序信息
+    curInputMap.clear();
+    if (arguments[0]->to_string() != "self") {
+        SPDLOG_ERROR("Unexpected Error");
+        return;
+    }
+
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        curInputMap[arguments[i]->to_string()] = i - 1;
+    }
+
+    // 扫描所有语句，更新funcOut2InMap，并且根据已有的funcOut2InMap添加映射语句
+    for (std::size_t i = 0; i < statements.size(); ++i) {
+        if (statements[i]->type() == PTO_NODE_TYPE::ASSIGNMENT) {
+            create_assignment((PTO_ASSIGNMENT*)statements[i], statements, i + 1);
+        }
+        else {
+            statements[i]->func_input_output_coalasce();
+        }
+    }
+
+    funcOut2InMap[funcName] = curOut2InMap;
+    curOut2InMap.clear();
+}
+
+void PTO_IF::func_input_output_coalasce() {
+    for (std::size_t i = 0; i < ifStatement.size(); ++i) {
+        if (ifStatement[i]->type() == PTO_NODE_TYPE::ASSIGNMENT) {
+            create_assignment((PTO_ASSIGNMENT*)ifStatement[i], ifStatement, i + 1);
+        } else {
+            ifStatement[i]->func_input_output_coalasce();
+        }
+    }
+    for (std::size_t i = 0; i < elseStatement.size(); ++i) {
+        if (elseStatement[i]->type() == PTO_NODE_TYPE::ASSIGNMENT) {
+            create_assignment((PTO_ASSIGNMENT*)elseStatement[i], elseStatement, i + 1);
+        } else {
+            elseStatement[i]->func_input_output_coalasce();
+        }
+    }
+}
+
+void PTO_FOR_LOOP::func_input_output_coalasce() {
+    for (std::size_t i = 0; i < statements.size(); ++i) {
+        if (statements[i]->type() == PTO_NODE_TYPE::ASSIGNMENT) {
+            create_assignment((PTO_ASSIGNMENT*)statements[i], statements, i + 1);
+        } else {
+            statements[i]->func_input_output_coalasce();
+        }
+    }
+}
+
+void PTO_RETURN::func_input_output_coalasce() {
+    // 这里需要构建output到input的映射关系
+    for (std::size_t i = 0; i < returnVal.size(); ++i) {
+        if (returnVal[i]->type() == PTO_NODE_TYPE::VARIABLE) {
+            if (curInputMap.find(returnVal[i]->to_string()) == curInputMap.end()) {
+                continue;
+            }
+            if (curOut2InMap.find(i) != curOut2InMap.end() && curOut2InMap[i] != curInputMap[returnVal[i]->to_string()]) {
+                SPDLOG_ERROR("Unimplemented");
+                return;
+            }
+            curOut2InMap[i] = curInputMap[returnVal[i]->to_string()];
+        } else {
+            SPDLOG_ERROR("Unimplemented");
+            return;
+        }
+    }
+}
+
+
 } // namespace pto_parser

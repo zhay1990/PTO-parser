@@ -110,6 +110,14 @@ void PTO_CALL::dump_to_pyTorch(int depth, std::ofstream& fout) const {
             size = ((PTO_LIST_VAR*)arguments[1])->get_var_list();
         }
 
+        if (arguments.size() == 4) {
+            if (arguments[3]->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
+                size = ((PTO_TUPLE_VAR*)arguments[3])->get_var_list();
+            } else {
+                size = ((PTO_LIST_VAR*)arguments[3])->get_var_list();
+            }
+        }
+
         if (arguments[2]->type() == PTO_NODE_TYPE::TUPLE_VARIABLE) {
             offset = ((PTO_TUPLE_VAR*)arguments[2])->get_var_list();
         } else {
@@ -389,6 +397,35 @@ void PTO_ASSIGNMENT::dump_to_pyTorch(int depth, std::ofstream& fout) const {
         
         fout << "] = ";
         args[1]->dump_to_pyTorch(0, fout);
+    }
+    else if (value->type() == PTO_NODE_TYPE::FUNC_CALL && ((PTO_CALL*)value)->get_func_name() == "pypto.language.tensor.slice") {
+        // 如果有第四个参量则需要特殊处理
+        if (((PTO_CALL*)value)->get_arguments().size() == 4) {
+            // 额外生成一个赋值0的语句
+            fout << " = torch.zeros(";
+            ((PTO_CALL*)value)->get_arguments()[1]->dump_to_pyTorch(0, fout);
+            fout << ", dtype=";
+
+            if (lhs->get_data_type().sub_types[0] == PTO_TYPE_KIND::BF16) {
+                fout << "torch.bfloat16)" << std::endl;
+            }
+            else if (lhs->get_data_type().sub_types[0] == PTO_TYPE_KIND::FP32) {
+                fout << "torch.float32)" << std::endl;
+            }
+            else {
+                SPDLOG_ERROR("Unexpected Error");
+                return;
+            }
+        
+            fout << indent;
+            lhs->dump_to_pyTorch(0, fout);
+            
+            // 进行部分赋值
+            fout << "[0: " << ((PTO_LIST_VAR*)((PTO_CALL*)value)->get_arguments()[3])->get_var_list()[0]->to_string() << ", 0: "
+                           << ((PTO_LIST_VAR*)((PTO_CALL*)value)->get_arguments()[3])->get_var_list()[1]->to_string() << "]";
+        }
+        fout << " = ";
+        value->dump_to_pyTorch(0, fout);
     }
     else {
         fout << " = ";
