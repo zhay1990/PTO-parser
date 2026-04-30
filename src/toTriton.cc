@@ -1,6 +1,7 @@
 #include "ptoNode.hh"
 #include "logger.hh"
 #include <sstream>
+#include <map>
 
 namespace pto_parser
 {
@@ -26,6 +27,8 @@ static std::unordered_map<std::string, std::unordered_map<int, struct PROGRAM_ID
 ////////////////////////////////////////////////
 // 入参里的tensor都是deviceMemory的指针
 static std::unordered_map<std::string, std::vector<std::string>> deviceMemoryPtr;
+// 这些也是device memory指针，但区分对待
+static std::unordered_map<std::string, std::vector<std::string>> scratchPadPtr;
 // 记录当前kernel函数内哪些devicememory指针被直接使用
 static std::unordered_set<std::string> directUsedDeviceMemory;
 // 记录每个kernel函数的第几个output指针需要在函数的参数列表里新建
@@ -37,6 +40,16 @@ static std::unordered_set<std::string> kernelUsedVarName;
 // 记录存在于local内存的变量，作为是否需要添加tl.store的依据
 static std::unordered_set<std::string> localVar;
 
+// 记录每个kernel函数所需要的用于处理slice和assemble的额外device memory指针
+// 这里没有做额外优化，每个slice和assemble会单独开一个device memory
+static std::unordered_map<std::string, std::vector<PTO_TYPE>> kernelScratchPadMem;
+// 本地记录
+static std::map<std::string, PTO_TYPE> curScratchPadMemForSlice;
+static std::map<std::string, PTO_TYPE> curScratchPadMemForAssem;
+
+// scratch pad memory的命名
+static int scratchPadMemIndex = 0;
+static std::string scratchPadMemPrefix = "__scratchPadMem_";
 
 ////////////////////////////////////////////
 // 以下是用于处理tensor的尺寸不是二的冥的情况
@@ -47,6 +60,8 @@ static std::unordered_map<std::string, std::vector<int>> tensorOriginalShape;
 static std::unordered_map<std::string, std::vector<int>> tensorActualShape;
 // 如果tensor的某个维度是动态维度，则在original shape中用-1表示，使用的变量在这个里面记录
 static std::unordered_map<std::string, std::vector<std::string>> tensorDynamicShape;
+// 记录dynamicShape的变量对应的实际尺寸是多少
+static std::unordered_map<std::string, int> dynamicShape2Int;
 
 static inline bool is_power_of_two(int n) {
     return n > 0 && (n & (n - 1)) == 0;
@@ -105,20 +120,20 @@ static const std::string generate_mask(const std::vector<int>& subShape, PTO_LIS
     return ret.str();
 }
 
-static const std::string generate_mask(PTO_LIST_VAR* subShape, PTO_LIST_VAR* startPos, const std::string& srcTensor) {
-    if (subShape->get_var_list().size() != 2 || startPos->get_var_list().size() != 2) {
-        SPDLOG_ERROR("Only support two-dimensional tensor");
-        return "";
-    }
+// static const std::string generate_mask(PTO_LIST_VAR* subShape, PTO_LIST_VAR* startPos, const std::string& srcTensor) {
+//     if (subShape->get_var_list().size() != 2 || startPos->get_var_list().size() != 2) {
+//         SPDLOG_ERROR("Only support two-dimensional tensor");
+//         return "";
+//     }
 
-    std::stringstream ret;
-    ret << "((tl.arange(0, " << srcTensor << ".shape(0)) >= " << startPos->get_var_list()[0]->to_string() << ") & (tl.arange(0, " << 
-                                srcTensor << ".shape(0)) < " << startPos->get_var_list()[0]->to_string() << " + " << subShape->get_var_list()[0]->to_string() << "))[:, None] & " <<
-           "((tl.arange(0, " << srcTensor << ".shape(1)) >= " << startPos->get_var_list()[1]->to_string() << ") & (tl.arange(0, " << 
-                                srcTensor << ".shape(1)) < " << startPos->get_var_list()[1]->to_string() << " + " << subShape->get_var_list()[1]->to_string() << "))[None, :]";
+//     std::stringstream ret;
+//     ret << "((tl.arange(0, " << srcTensor << ".shape(0)) >= " << startPos->get_var_list()[0]->to_string() << ") & (tl.arange(0, " << 
+//                                 srcTensor << ".shape(0)) < " << startPos->get_var_list()[0]->to_string() << " + " << subShape->get_var_list()[0]->to_string() << "))[:, None] & " <<
+//            "((tl.arange(0, " << srcTensor << ".shape(1)) >= " << startPos->get_var_list()[1]->to_string() << ") & (tl.arange(0, " << 
+//                                 srcTensor << ".shape(1)) < " << startPos->get_var_list()[1]->to_string() << " + " << subShape->get_var_list()[1]->to_string() << "))[None, :]";
 
-    return ret.str();
-}
+//     return ret.str();
+// }
 
 static void gen_triton_load(std::ofstream& fout, const int& depth, const std::string& varName) {
     const std::string indent(depth, '\t');
@@ -220,6 +235,15 @@ static void gen_triton_load(std::ofstream& fout, const int& depth, const std::st
 
         fout << indent << "# 基于有效数据范围[" << tensorView->get_var_list()[0]->to_string() << ", " << tensorView->get_var_list()[1]->to_string() << "]生成Mask" << std::endl;
         fout << indent << maskName << " = " << generate_mask(tensorActualShape[dstName], tensorView) << std::endl;
+
+        if (tensorView->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
+            dynamicShape2Int[tensorView->get_var_list()[0]->to_string()] = tensorActualShape[dstName][0];
+            SPDLOG_INFO("Dynamic shape variable {} is binding with {}", tensorView->get_var_list()[0]->to_string(), tensorActualShape[dstName][0]);
+        }
+        if (tensorView->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
+            dynamicShape2Int[tensorView->get_var_list()[1]->to_string()] = tensorActualShape[dstName][1];
+            SPDLOG_INFO("Dynamic shape variable {} is binding with {}", tensorView->get_var_list()[1]->to_string(), tensorActualShape[dstName][1]);
+        }
 
         // 记录这个tensor有数据的范围
         std::vector<int> validShape;
@@ -489,6 +513,12 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
     tensorActualShape.clear();
     tensorDynamicShape.clear();
 
+    curScratchPadMemForSlice.clear();
+    curScratchPadMemForAssem.clear();
+    scratchPadPtr.clear();
+
+    dynamicShape2Int.clear();
+
     std::vector<std::string> programIDName(curProgramIDInfo.size(), "");
 
     // 先记录deviceMemory的名字
@@ -528,10 +558,11 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
         }
     }
 
-    // 扫描所有statement，完成三项任务
+    // 扫描所有statement，完成四项任务
     // 1. 收集使用过的变量名
     // 2. 收集被直接使用的deviceMemory的名字
     // 3. 收集返回值的名字，判断是否需要增加入参
+    // 4. 收集不是从device memory来的slice和assemble涉及到的变量名及其所需要的memory大小
     for (const auto& s : statements) {
         s->collect_triton_kernel_info();
     }
@@ -622,6 +653,124 @@ void PTO_FUNC::convert_to_triton_kernel(int depth, std::ofstream& fout) {
             fout << indent << "\t" << convertName[0] << ", " << convertName[1] << ", " << convertName[2] << ", # Output ptr" << std::endl;
         }
     }
+
+    // 对于scratchpad memory的处理，先筛选assemble的scratch pad
+    std::vector<std::string> removeList;
+    for (const auto& it : curScratchPadMemForAssem) {
+        if (deviceMemoryPtr.find(it.first) != deviceMemoryPtr.end()) {
+            removeList.emplace_back(it.first);
+        }
+    }
+    for (const auto& r : removeList) {
+        curScratchPadMemForAssem.erase(r);
+    }
+
+    // 生成对应的device memory指针
+    kernelScratchPadMem[funcName] = std::vector<PTO_TYPE>();
+    std::unordered_map<std::string, PTO_TYPE> reference;
+    for (const auto& it : curScratchPadMemForSlice) {
+        // 同样大小的内存是否已经生成？
+        std::string samePad = "";
+        for (const auto& iit : reference) {
+            if (it.second == iit.second) {
+                samePad = iit.first;
+                break;
+            }
+        }
+
+        if (samePad != "") {
+            // 复用同一块scratch pad memory
+            scratchPadPtr[it.first] = scratchPadPtr[samePad];
+        } else {
+            // 生成新的device memory指针
+            std::vector<std::string> convertName;
+
+            std::string name = it.first + "_scratchPad_ptr";
+            while (kernelUsedVarName.find(name) != kernelUsedVarName.end()) {
+                name += '_';
+            }
+            kernelUsedVarName.insert(name);
+            convertName.emplace_back(name);
+
+            name = it.first + "_scratchPad_stride_0";
+            while (kernelUsedVarName.find(name) != kernelUsedVarName.end()) {
+                name += '_';
+            }
+            kernelUsedVarName.insert(name);
+            convertName.emplace_back(name);
+
+            name = it.first + "_scratchPad_stride_1";
+            while (kernelUsedVarName.find(name) != kernelUsedVarName.end()) {
+                name += '_';
+            }
+            kernelUsedVarName.insert(name);
+            convertName.emplace_back(name);
+
+            scratchPadPtr[it.first] = convertName;
+
+            // 输出到参数列表里
+            fout << indent << "\t# Scatch pad memory " << it.second.to_string() << std::endl;
+            fout << indent << "\t" << convertName[0] << ", " << convertName[1] << ", " << convertName[2] << ", # Output ptr" << std::endl;
+
+            // 注册这个指针信息
+            kernelScratchPadMem[funcName].emplace_back(it.second);
+            reference[it.first] = it.second;
+
+            SPDLOG_INFO("Create scratch pad memory {} for kernel {}", it.second.to_string(), funcName);
+        }
+    }
+
+    for (const auto& it : curScratchPadMemForAssem) {
+        // 同样大小的内存是否已经生成？
+        std::string samePad = "";
+        for (const auto& iit : reference) {
+            if (it.second == iit.second) {
+                samePad = iit.first;
+                break;
+            }
+        }
+
+        if (samePad != "") {
+            // 复用同一块scratch pad memory
+            scratchPadPtr[it.first] = scratchPadPtr[samePad];
+        } else {
+            // 生成新的device memory指针
+            std::vector<std::string> convertName;
+
+            std::string name = it.first + "_scratchPad_ptr";
+            while (kernelUsedVarName.find(name) != kernelUsedVarName.end()) {
+                name += '_';
+            }
+            kernelUsedVarName.insert(name);
+            convertName.emplace_back(name);
+
+            name = it.first + "_scratchPad_stride_0";
+            while (kernelUsedVarName.find(name) != kernelUsedVarName.end()) {
+                name += '_';
+            }
+            kernelUsedVarName.insert(name);
+            convertName.emplace_back(name);
+
+            name = it.first + "_scratchPad_stride_1";
+            while (kernelUsedVarName.find(name) != kernelUsedVarName.end()) {
+                name += '_';
+            }
+            kernelUsedVarName.insert(name);
+            convertName.emplace_back(name);
+
+            scratchPadPtr[it.first] = convertName;
+
+            // 输出到参数列表里
+            fout << indent << "\t# Scatch pad memory " << it.second.to_string() << std::endl;
+            fout << indent << "\t" << convertName[0] << ", " << convertName[1] << ", " << convertName[2] << ", # Output ptr" << std::endl;
+
+            // 注册这个指针信息
+            kernelScratchPadMem[funcName].emplace_back(it.second);
+            reference[it.first] = it.second;
+
+            SPDLOG_INFO("Create scratch pad memory {} for kernel {}", it.second.to_string(), funcName);
+        }
+    }
     
     fout << indent << "):" << std::endl;
 
@@ -710,28 +859,83 @@ void PTO_ASSIGNMENT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
                 // 认为左侧的变量是新的寄存器的值
                 localVar.insert(lhs->to_string());
 
-                // 如果subShape不是2的冥的话，使用tl.where处理
-                if (subShape->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT || !is_power_of_two(std::stoi(subShape->get_var_list()[0]->to_string())) || 
-                    subShape->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT || !is_power_of_two(std::stoi(subShape->get_var_list()[1]->to_string()))) {
-                    
-                    // 需要先生成mask
-                    std::string maskName = lhs->to_string() + "_mask";
-                    while (kernelUsedVarName.find(maskName) != kernelUsedVarName.end()) {
-                        maskName += '_';
-                    }
-                    kernelUsedVarName.insert(maskName);
-                    
-                    fout << indent << "# 基于初始位置[" << startPos->get_var_list()[0]->to_string() << ", " << startPos->get_var_list()[1]->to_string() << "]和tensor形状[" <<
-                                                        subShape->get_var_list()[0]->to_string() << ", " << subShape->get_var_list()[1]->to_string() << "]生成tl.where使用的Mask" << std::endl;
-                    fout << indent << maskName << " = " << generate_mask(subShape, startPos, tensorName) << std::endl;
-                    fout << indent << "# 使用where替换slice, Mask以外的数据填0" << std::endl;
-                    fout << indent << lhs->to_string() << " = tl.where(" << maskName << ", " << tensorName << ", 0.0)";
-                }
-                else {
-                    // 直接切分
-                    SPDLOG_ERROR("Slice from non-device memory ptr at line {} cannot be converted to triton", row_);
+                // 应当已为第一个参数注册了scratch pad memory
+                if (scratchPadPtr.find(tensorName) == scratchPadPtr.end()) {
+                    SPDLOG_ERROR("Unexpected Error");
                     return;
                 }
+
+                // 先把第一个参数存入对应的scratch pad memory
+                // 先生成对应的mask
+                // 这里要求第一个tensor的尺寸必须是固定的 没有动态shape
+                const auto& argDataType = funcPtr->get_arguments()[0]->get_data_type();
+                if (argDataType.kind != PTO_TYPE_KIND::TENSOR || argDataType.shape.size() != 2) {
+                    SPDLOG_ERROR("Only support two-dimensional tensor");
+                    return;
+                }
+                if (argDataType.shape[0] == -1 || argDataType.shape[1] == -1) {
+                    SPDLOG_ERROR("Unimplemented for dynamic shape");
+                    return;
+                }
+
+                SPDLOG_WARN("Use tl.store + tl.load to replace the pl.slice at line {}, consider removing it from the PTO source", row_);
+
+                // 生成store的offset
+                std::string offsetName = tensorName + "_store_offset";
+                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                    offsetName += '_';
+                }
+                kernelUsedVarName.insert(offsetName);
+                fout << indent << "# Slice conversion: store offset" << std::endl;
+                fout << indent << offsetName << " = (tl.arange(0, " << next_power_of_two(argDataType.shape[0]) << "))[:, None] * " << scratchPadPtr[tensorName][1] <<
+                                                " + (tl.arange(0, " << next_power_of_two(argDataType.shape[1]) << "))[None, :] * " << scratchPadPtr[tensorName][2] << std::endl;
+                // 不需要生成mask
+                fout << indent << "tl.store(" << scratchPadPtr[tensorName][0] << " + " << offsetName << ", " << tensorName << ")" << std::endl;
+
+                // 生成load的offset
+                offsetName = tensorName + "_load_offset";
+                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                    offsetName += '_';
+                }
+                kernelUsedVarName.insert(offsetName);
+                fout << indent << "# Slice conversion: load offset" << std::endl;
+                
+                int subShape0, subShape1;
+                if (subShape->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
+                    if (dynamicShape2Int.find(subShape->get_var_list()[0]->to_string()) == dynamicShape2Int.end()) {
+                        SPDLOG_ERROR("Unexpected Error");
+                        return;
+                    }
+                    subShape0 = dynamicShape2Int[subShape->get_var_list()[0]->to_string()]; 
+                } else {
+                    subShape0 = std::stoi(subShape->get_var_list()[0]->to_string());
+                }
+
+                if (subShape->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
+                    if (dynamicShape2Int.find(subShape->get_var_list()[1]->to_string()) == dynamicShape2Int.end()) {
+                        SPDLOG_ERROR("Unexpected Error");
+                        return;
+                    }
+                    subShape1 = dynamicShape2Int[subShape->get_var_list()[1]->to_string()]; 
+                } else {
+                    subShape1 = std::stoi(subShape->get_var_list()[1]->to_string());
+                }
+
+                fout << indent << offsetName << " = (" << startPos->get_var_list()[0]->to_string() << " + tl.arange(0, " << next_power_of_two(subShape0) << "))[:, None] * " << scratchPadPtr[tensorName][1] <<
+                                                " + (" << startPos->get_var_list()[1]->to_string() << " + tl.arange(0, " << next_power_of_two(subShape1) << "))[None, :] * " << scratchPadPtr[tensorName][2] << std::endl;
+            
+                // 生成load的mask
+                std::string maskName = tensorName + "_load_mask";
+                while (kernelUsedVarName.find(maskName) != kernelUsedVarName.end()) {
+                    maskName += '_';
+                }
+                kernelUsedVarName.insert(maskName);
+
+                fout << indent << maskName << " = ((tl.arange(0, " << next_power_of_two(subShape0) << "))[:, None] < " << subShape->get_var_list()[0]->to_string() << ") & " <<
+                                                " ((tl.arange(0, " << next_power_of_two(subShape1) << "))[None, :] < " << subShape->get_var_list()[1]->to_string() << ")" << std::endl;
+
+                // 生成load
+                fout << indent << lhs->to_string() << " = tl.load(" << scratchPadPtr[tensorName][0] << " + " << offsetName << ", mask=" << maskName << ", other=0.0)";
             }
             // 处理完毕
             return;
@@ -779,102 +983,214 @@ void PTO_ASSIGNMENT::convert_to_triton_kernel(int depth, std::ofstream& fout) {
             }
             else {
                 // 需要知道第一个参数和第二个参数的实际尺寸
-                // 做一个强制要求，要求某个维度必须是1
                 const auto& lhsDataType = lhs->get_data_type();
                 if (lhsDataType.kind != PTO_TYPE_KIND::TENSOR || lhsDataType.shape.size() != 2) {
                     SPDLOG_ERROR("Only support two-dimension tensor");
                     return;
                 }
-                if (lhsDataType.shape[0] != 1 && lhsDataType.shape[1] != 1) {
-                    SPDLOG_ERROR("One dimension must be 1");
-                    return;
-                }
-                
-                // 先做一个赋值
-                fout << indent << lhs->to_string() << " = " << funcPtr->get_arguments()[0]->to_string() << std::endl;
 
-                // 拿到第二个参数的维度
-                const auto& valueDataType = funcPtr->get_arguments()[1]->get_data_type();
+                // 左侧的变量在local memory中的值已经修改
+                localVar.insert(lhs->to_string());
 
-                if (valueDataType.kind != PTO_TYPE_KIND::TENSOR) {
+                // 应当已为第lhs注册了scratch pad memory
+                if (scratchPadPtr.find(lhs->to_string()) == scratchPadPtr.end()) {
                     SPDLOG_ERROR("Unexpected Error");
                     return;
                 }
 
-                // 先沿着1的维度将lhs和第二个参数压为1维tensor
-                // 使用tl.view将两个变量都压到1维
-                if (lhsDataType.shape[0] == 1) {
-                    fout << indent << lhs->to_string() << " = tl.view(" << lhs->to_string() << ", (" << lhsDataType.shape[1] << ",))" << std::endl;
-                    if (valueDataType.shape[0] != 1) {
-                        SPDLOG_ERROR("Unexpected Error");
-                        return;
-                    }
-                    fout << indent << funcPtr->get_arguments()[1]->to_string() << " = tl.view(" << funcPtr->get_arguments()[1]->to_string() << ", (" << valueDataType.shape[1] << ",))" << std::endl;
-                } else {
-                    fout << indent << lhs->to_string() << " = tl.view(" << lhs->to_string() << ", (" << lhsDataType.shape[0] << ",))" << std::endl;
-                    if (valueDataType.shape[1] != 1) {
-                        SPDLOG_ERROR("Unexpected Error");
-                        return;
-                    }
-                    fout << indent << funcPtr->get_arguments()[1]->to_string() << " = tl.view(" << funcPtr->get_arguments()[1]->to_string() << ", (" << valueDataType.shape[0] << ",))" << std::endl;
+                // 先把第一个参数存入对应的scratch pad memory
+                // 先生成对应的mask
+                // 这里要求第一个tensor的尺寸必须是固定的 没有动态shape
+                const auto& argDataType = funcPtr->get_arguments()[0]->get_data_type();
+                if (argDataType.kind != PTO_TYPE_KIND::TENSOR || argDataType.shape.size() != 2) {
+                    SPDLOG_ERROR("Only support two-dimensional tensor");
+                    return;
                 }
-
-                // 使用tl.cat完成一维向量的拼接
-                // 强制要求拼接的位置要么在开头，要么在末尾，即可以写成两个向量的拼接
-                const auto& startPos = (PTO_LIST_VAR*)funcPtr->get_arguments()[2];
-                if (startPos->get_var_list().size() != 2 || startPos->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT || startPos->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
-                    SPDLOG_ERROR("Unexpected error");
+                if (argDataType.shape[0] == -1 || argDataType.shape[1] == -1) {
+                    SPDLOG_ERROR("Unimplemented for dynamic shape");
                     return;
                 }
 
-                if (lhsDataType.shape[0] == 1) {
-                    if (std::stoi(startPos->get_var_list()[0]->to_string()) != 0) {
+                SPDLOG_WARN("Use tl.store + tl.load to replace the pl.assemble at line {}, consider removing it from the PTO source", row_);
+
+                // 生成store的offset
+                auto tensorName = funcPtr->get_arguments()[0]->to_string();
+                std::string offsetName = tensorName + "_store_offset";
+                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                    offsetName += '_';
+                }
+                kernelUsedVarName.insert(offsetName);
+
+                fout << indent << "# Assemble conversion: store offset" << std::endl;
+                fout << indent << offsetName << " = (tl.arange(0, " << next_power_of_two(argDataType.shape[0]) << "))[:, None] * " << scratchPadPtr[lhs->to_string()][1] <<
+                                                " + (tl.arange(0, " << next_power_of_two(argDataType.shape[1]) << "))[None, :] * " << scratchPadPtr[lhs->to_string()][2] << std::endl;
+                // 不需要生成mask
+                fout << indent << "tl.store(" << scratchPadPtr[lhs->to_string()][0] << " + " << offsetName << ", " << tensorName << ")" << std::endl;
+
+                // 生成第二个参量的offset
+                offsetName = funcPtr->get_arguments()[1]->to_string() + "_store_offset";
+                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                    offsetName += '_';
+                }
+                kernelUsedVarName.insert(offsetName);
+
+                const auto& startPos = (PTO_LIST_VAR*)funcPtr->get_arguments()[2];
+                const auto& argDataType2 = funcPtr->get_arguments()[1]->get_data_type();
+
+                int subShape0, subShape1;
+                if (argDataType2.shape[0] == -1) {
+                    if (dynamicShape2Int.find(argDataType2.dynamicShape[0]) == dynamicShape2Int.end()) {
                         SPDLOG_ERROR("Unexpected Error");
                         return;
                     }
-                    int startPosInt = std::stoi(startPos->get_var_list()[1]->to_string());
-                    
-                    if (startPosInt == 0) {
-                        fout << indent << lhs->to_string() << " = tl.cat(" << funcPtr->get_arguments()[1]->to_string() << ", " << lhs->to_string() << "[" << valueDataType.shape[1] << ": " << lhsDataType.shape[1] << "])" << std::endl;
-                    }
-                    else if (startPosInt + valueDataType.shape[1] == lhsDataType.shape[1]) {
-                        fout << indent << lhs->to_string() << " = tl.cat(" << lhs->to_string() << "[0: " << startPosInt << "], " << funcPtr->get_arguments()[1]->to_string() << ")" << std::endl;
-                    }
-                    else {
-                        SPDLOG_ERROR("Unexpected position for assemble {} {} {}", startPosInt, valueDataType.shape[1], lhsDataType.shape[1]);
-                        return;
-                    }
+                    subShape0 = dynamicShape2Int[argDataType2.dynamicShape[0]];
                 } else {
-                    if (std::stoi(startPos->get_var_list()[1]->to_string()) != 0) {
+                    subShape0 = argDataType2.shape[0];
+                }
+
+                if (argDataType2.shape[1] == -1) {
+                    if (dynamicShape2Int.find(argDataType2.dynamicShape[1]) == dynamicShape2Int.end()) {
                         SPDLOG_ERROR("Unexpected Error");
                         return;
                     }
-                    int startPosInt = std::stoi(startPos->get_var_list()[0]->to_string());
+                    subShape1 = dynamicShape2Int[argDataType2.dynamicShape[1]];
+                } else {
+                    subShape1 = argDataType2.shape[1];
+                }
 
-                    if (startPosInt == 0) {
-                        fout << indent << lhs->to_string() << " = tl.cat(" << funcPtr->get_arguments()[1]->to_string() << ", " << lhs->to_string() << "[" << valueDataType.shape[0] << ": " << lhsDataType.shape[0] << "])" << std::endl;
-                    }
-                    else if (startPosInt + valueDataType.shape[0] == lhsDataType.shape[0]) {
-                        fout << indent << lhs->to_string() << " = tl.cat(" << lhs->to_string() << "[0: " << startPosInt << "], " << funcPtr->get_arguments()[1]->to_string() << ")" << std::endl;
-                    }
-                    else {
-                        SPDLOG_ERROR("Unexpected position for assemble {} {} {}", startPosInt, valueDataType.shape[0], lhsDataType.shape[0]);
+                fout << indent << "# Assemble conversion: store offset #2" << std::endl;
+                fout << indent << offsetName << " = (" << startPos->get_var_list()[0]->to_string() << " + tl.arange(0, " << next_power_of_two(subShape0) << "))[:, None] * " << scratchPadPtr[lhs->to_string()][1] <<
+                                                " + (" << startPos->get_var_list()[1]->to_string() << " + tl.arange(0, " << next_power_of_two(subShape1) << "))[None, :] * " << scratchPadPtr[lhs->to_string()][2] << std::endl;
+                // 生成mask
+                std::string maskName = funcPtr->get_arguments()[1]->to_string() + "_store_mask";
+                while (kernelUsedVarName.find(maskName) != kernelUsedVarName.end()) {
+                    maskName += "_";
+                }
+                kernelUsedVarName.insert(maskName);
+                
+                fout << indent << maskName << " = ((tl.arange(0, " << next_power_of_two(subShape0) << "))[:, None] < ";
+                
+                if (argDataType2.shape[0] == -1) {
+                    fout << argDataType2.dynamicShape[0];
+                } else {
+                    fout << argDataType2.shape[0];
+                }
+                fout << ") & ((tl.arange(0, " << next_power_of_two(subShape1) << "))[None, :] < ";
+                if (argDataType2.shape[1] == -1) {
+                    fout << argDataType2.dynamicShape[1];
+                } else {
+                    fout << argDataType2.shape[1];
+                }
+                fout << ")" << std::endl;
+
+                fout << indent << "tl.store(" << scratchPadPtr[lhs->to_string()][0] << " + " << offsetName << ", " << funcPtr->get_arguments()[1]->to_string() << ", mask=" << maskName << ")" << std::endl;
+
+                // 生成load的offset
+                offsetName = lhs->to_string() + "_load_offset";
+                while (kernelUsedVarName.find(offsetName) != kernelUsedVarName.end()) {
+                    offsetName += '_';
+                }
+                kernelUsedVarName.insert(offsetName);
+                fout << indent << "# Assemble conversion: load offset" << std::endl;
+                
+                if (lhs->get_data_type().shape[0] == -1) {
+                    if (dynamicShape2Int.find(lhs->get_data_type().dynamicShape[0]) == dynamicShape2Int.end()) {
+                        SPDLOG_ERROR("Unexpected Error");
                         return;
                     }
-                }
-
-                // 拉回二维
-                if (lhsDataType.shape[0] == 1) {
-                    fout << indent << lhs->to_string() << " = " << lhs->to_string() << "[None, :]";
+                    subShape0 = dynamicShape2Int[lhs->get_data_type().dynamicShape[0]];
                 } else {
-                    fout << indent << lhs->to_string() << " = " << lhs->to_string() << "[:, None]";
+                    subShape0 = lhs->get_data_type().shape[0];
                 }
 
-                // 左侧的变量在local memory中的值已经修改
-                localVar.insert(lhs->to_string());
+                if (lhs->get_data_type().shape[1] == -1) {
+                    if (dynamicShape2Int.find(lhs->get_data_type().dynamicShape[1]) == dynamicShape2Int.end()) {
+                        SPDLOG_ERROR("Unexpected Error");
+                        return;
+                    }
+                    subShape1 = dynamicShape2Int[lhs->get_data_type().dynamicShape[1]];
+                } else {
+                    subShape1 = lhs->get_data_type().shape[1];
+                }
+
+                fout << indent << offsetName << " = (tl.arange(0, " << next_power_of_two(subShape0) << "))[:, None] * " << scratchPadPtr[lhs->to_string()][1] <<
+                                                " + (tl.arange(0, " << next_power_of_two(subShape1) << "))[None, :] * " << scratchPadPtr[lhs->to_string()][2] << std::endl;
+            
+                // 生成load的mask
+                maskName = lhs->to_string() + "_load_mask";
+                while (kernelUsedVarName.find(maskName) != kernelUsedVarName.end()) {
+                    maskName += '_';
+                }
+                kernelUsedVarName.insert(maskName);
+
+                fout << indent << maskName << " = ((tl.arange(0, " << next_power_of_two(subShape0) << "))[:, None] < ";
+                
+                if (lhs->get_data_type().shape[0] == -1) {
+                    fout << lhs->get_data_type().dynamicShape[0];
+                } else {
+                    fout << lhs->get_data_type().shape[0];
+                }
+
+                fout << ") & ((tl.arange(0, " << next_power_of_two(subShape1) << "))[None, :] < ";
+
+                if (lhs->get_data_type().shape[1] == -1) {
+                    fout << lhs->get_data_type().dynamicShape[1];
+                } else {
+                    fout << lhs->get_data_type().shape[1];
+                }
+                fout << ")" << std::endl;
+
+                // 生成load
+                fout << indent << lhs->to_string() << " = tl.load(" << scratchPadPtr[lhs->to_string()][0] << " + " << offsetName << ", mask=" << maskName << ", other=0.0)";
             }
             // 处理完毕
             return;
+        }
+        else if (funcPtr->get_func_name() == "pypto.language.tensor.row_max") {
+            // column维度是dynamic shape？
+            const auto& argDataType = funcPtr->get_arguments()[0]->get_data_type();
+            if (argDataType.kind != PTO_TYPE_KIND::TENSOR || argDataType.shape.size() != 2) {
+                SPDLOG_ERROR("Only support two-dimensional tensor");
+                return;
+            }
+
+            if (argDataType.shape[1] == -1) {
+                // 强制要求shape[0]是2的冥
+                if (!is_power_of_two(argDataType.shape[0])) {
+                    SPDLOG_ERROR("Unexpected Error");
+                    return;
+                }
+                if (dynamicShape2Int.find(argDataType.dynamicShape[1]) == dynamicShape2Int.end()) {
+                    SPDLOG_ERROR("Unexpected Error");
+                    return;
+                }
+
+                // 对动态shape的默认处理是填0，这对于row_max来说是不对的，需要填充负无穷大
+                fout << indent << "# 将无效数据替换为-inf" << std::endl;
+                std::string maskName = funcPtr->get_arguments()[0]->to_string() + "_mask";
+                while (kernelUsedVarName.find(maskName) != kernelUsedVarName.end()) {
+                    maskName += '_';
+                }
+                kernelUsedVarName.insert(maskName);
+
+                fout << indent << maskName << " = ((tl.arange(0, " << argDataType.shape[0] << "))[:, None] < " << argDataType.shape[0] << ") & " <<
+                                                 "((tl.arange(0, " << dynamicShape2Int[argDataType.dynamicShape[1]] << "))[None, :] < " << argDataType.dynamicShape[1] << ")" << std::endl;
+                
+                fout << indent << funcPtr->get_arguments()[0]->to_string() << " = tl.where(" << maskName << ", " << funcPtr->get_arguments()[0]->to_string() << ", float('-inf'))" << std::endl;
+
+                // 输出Max语句
+                localVar.insert(lhs->to_string());
+                fout << indent << lhs->to_string() << " = ";
+                value->convert_to_triton_kernel(0, fout);
+
+                fout << std::endl;
+
+                // 将多余的值换回0.0
+                fout << indent << "# 将无效数据替换回0.0, 适配除max以外的其他计算" << std::endl;
+                fout << indent << funcPtr->get_arguments()[0]->to_string() << " = tl.where(" << maskName << ", " << funcPtr->get_arguments()[0]->to_string() << ", 0.0)";
+                
+                return;
+            }
         }
     }
 
@@ -889,7 +1205,17 @@ void PTO_CALL::convert_to_triton_kernel(int depth, std::ofstream& fout) {
     fout << indent;
     if (funcName == "pypto.language.tensor.create") {
         fout << "tl.zeros(";
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
+
+        // 第一个参数是tensor shape，此处强制要求是常数
+        const auto& tensorShape = (PTO_LIST_VAR*)arguments[0];
+        if (tensorShape->get_var_list().size() != 2 || tensorShape->get_var_list()[0]->type() != PTO_NODE_TYPE::INT_CONSTANT || tensorShape->get_var_list()[1]->type() != PTO_NODE_TYPE::INT_CONSTANT) {
+            SPDLOG_ERROR("Only support two-dimensional tensor with constant shape");
+            return;
+        }
+        fout << "[" << next_power_of_two(std::stoi(tensorShape->get_var_list()[0]->to_string())) << ", " <<
+                       next_power_of_two(std::stoi(tensorShape->get_var_list()[1]->to_string())) << "], ";
+
+        for (std::size_t i = 1; i < arguments.size(); ++i) {
             arguments[i]->convert_to_triton_kernel(0, fout);
             if (i != arguments.size() - 1) {
                 fout << ", ";
@@ -1241,7 +1567,33 @@ void PTO_CALL::collect_triton_kernel_info() const {
         }
     }
     else if (funcName == "pypto.language.tensor.slice") {
-        // 无需检查
+        // 检查第一个入参是否为本地变量
+        if (deviceMemoryPtr.find(arguments[0]->to_string()) == deviceMemoryPtr.end()) {
+            // 申请一块device memory空间做这个转换
+            // 这里有优化空间，即如果slice的输出tensor和输入tensor的尺寸一致，则可以用tl.where实现
+            // 但这需要做全量的tensor shape检查，考虑动态shape和非2冥等情况，较为复杂
+            // 实质上，这样的slice语句应当通过修改PTO源码消除，所以这边就不做优化
+            
+            // 做个强制要求，第一个参数不能是动态shape，如果遇到，先报错，后续在处理
+            const auto& argDataType = arguments[0]->get_data_type();
+            if (argDataType.kind != PTO_TYPE_KIND::TENSOR || argDataType.shape.size() != 2) {
+                SPDLOG_ERROR("Only support two-dimensional tensor");
+                return;
+            }
+
+            if (argDataType.shape[0] == -1 || argDataType.shape[1] == -1) {
+                SPDLOG_ERROR("Unimplemented for dynamic shape");
+                return;
+            }
+
+            PTO_TYPE memShape = argDataType;
+            memShape.shape[0] = next_power_of_two(argDataType.shape[0]);
+            memShape.shape[1] = next_power_of_two(argDataType.shape[1]);
+
+            // 记录这个scratch pad memory的信息
+            curScratchPadMemForSlice[arguments[0]->to_string()] = memShape;
+            SPDLOG_DEBUG("Allocate scratch pad mem {} for tensor {}", memShape.to_string(), argDataType.to_string());
+        }
     }
     else {
         for (const auto& arg : arguments) {
@@ -1265,6 +1617,32 @@ void PTO_ASSIGNMENT::collect_triton_kernel_info() const {
             // 如果第一个argument和lhs名字不一样，且是device memory，则是direct access
             if (funcPtr->get_arguments()[0]->to_string() != lhs->to_string() && deviceMemoryPtr.find(funcPtr->get_arguments()[0]->to_string()) != deviceMemoryPtr.end()) {
                 directUsedDeviceMemory.insert(funcPtr->get_arguments()[0]->to_string());
+            }
+
+            // 在这个函数被调用时，返回值的指针还未被声明成device memory，所以以下判断可能存在误判，这个问题在调用这个函数的地方处理
+            // 和slice一样，这里存在优化空间，即第二个参量的尺寸如果和第一个参量一样，则可以转化成tl.where
+            // 基于和slice处一样的判断，这里不做该优化
+            if (deviceMemoryPtr.find(lhs->to_string()) == deviceMemoryPtr.end()) {
+                const auto& lhsDataType = lhs->get_data_type();
+                // 做个强制要求，第一个参数不能是动态shape，如果遇到，先报错，后续在处理
+
+                if (lhsDataType.kind != PTO_TYPE_KIND::TENSOR || lhsDataType.shape.size() != 2) {
+                    SPDLOG_ERROR("Only support two-dimensional tensor");
+                    return;
+                }
+
+                if (lhsDataType.shape[0] == -1 || lhsDataType.shape[1] == -1) {
+                    SPDLOG_ERROR("Unimplemented for dynamic shape");
+                    return;
+                }
+
+                PTO_TYPE memShape = lhsDataType;
+                memShape.shape[0] = next_power_of_two(lhsDataType.shape[0]);
+                memShape.shape[1] = next_power_of_two(lhsDataType.shape[1]);
+
+                // 记录这个scratch pad memory的信息
+                curScratchPadMemForAssem[lhs->to_string()] = memShape;
+                SPDLOG_DEBUG("Allocate scratch pad mem {} for tensor {} with name {}", memShape.to_string(), lhsDataType.to_string(), lhs->to_string());
             }
         }
     }
@@ -1414,6 +1792,29 @@ void PTO_ASSIGNMENT::convert_to_triton_host(int depth, std::ofstream& fout) cons
             SPDLOG_ERROR("Unimplemented");
             return;
         }
+
+        // 可能需要创建scrachpad memory
+        std::vector<int> usedScratchPadIndex;
+        if (kernelScratchPadMem.find(kernelName) != kernelScratchPadMem.end()) {
+            for (const auto& t : kernelScratchPadMem[kernelName]) {
+                SPDLOG_INFO("Create scratch pad memory {} for kernel {} at line {}", t.to_string(), kernelName, row_);
+                fout << indent << scratchPadMemPrefix << scratchPadMemIndex << " = torch.empty([" << t.shape[0] << ", " << t.shape[1] << "], dtype = ";
+                if (t.sub_types[0] == PTO_TYPE_KIND::FP32) {
+                    fout << "torch.float32";
+                }
+                else if (t.sub_types[0] == PTO_TYPE_KIND::BF16) {
+                    fout << "torch.bfloat16";
+                }
+                else {
+                    SPDLOG_ERROR("Unexpected Error");
+                    return;
+                }
+                fout << ", device = 'cuda')" << std::endl;
+                usedScratchPadIndex.emplace_back(scratchPadMemIndex);
+                scratchPadMemIndex += 1;
+            }
+        }
+
         value->convert_to_triton_host(depth, fout);
 
         // 处理输出
@@ -1433,6 +1834,11 @@ void PTO_ASSIGNMENT::convert_to_triton_host(int depth, std::ofstream& fout) cons
         else {
             SPDLOG_ERROR("Unimplemented");
             return;
+        }
+
+        // 处理scratchPadMemory
+        for (const auto& i : usedScratchPadIndex) {
+            fout << scratchPadMemPrefix << i << ", " << scratchPadMemPrefix << i << ".stride(0), " << scratchPadMemPrefix << i << ".stride(1), ";
         }
 
         fout << ")";
@@ -1535,14 +1941,18 @@ void PTO_CALL::convert_to_triton_host(int depth, std::ofstream& fout) const {
                 // 这个参量是通过program ID传入的
                 continue;
             }
-            fout << arguments[i]->to_string() << ", ";
+            
             if (arguments[i]->get_data_type().kind == PTO_TYPE_KIND::TENSOR) {
+                fout << arguments[i]->to_string() << ", ";
                 // 必须是二维
                 if (arguments[i]->get_data_type().shape.size() != 2) {
                     SPDLOG_ERROR("Only support two-dimensional tensor");
                     return;
                 }
                 fout << arguments[i]->to_string() << ".stride(0), " << arguments[i]->to_string() << ".stride(1), ";
+            } else {
+                // 默认是int类型，不做检查
+                fout << "int(" << arguments[i]->to_string() << "), ";
             }
         }
 

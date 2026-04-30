@@ -18,6 +18,7 @@ def qwen3_decode_layer_incore_1(
 ):
     ob_0_out = tl.program_id(axis = 0)
     ob_0_in = tl.program_id(axis = 1)
+    # 实际尺寸和原始尺寸一致, 不需要mask
     inv_rms_tile_0_offset = (tl.arange(0, 4))[:, None] * inv_rms_tile_0_stride_0 + (tl.arange(0, 1))[None, :] * inv_rms_tile_0_stride_1
     inv_rms_tile_0 = tl.load(inv_rms_tile_0_ptr + inv_rms_tile_0_offset)
     q0_0 = ((0 + (((ob_0_out * 4) + ob_0_in) * 1)) * 64)
@@ -25,13 +26,16 @@ def qwen3_decode_layer_incore_1(
     q_acc_1 = q_acc_0 * 0
     for kb_5 in range(20):
         k0_7 = (kb_5 * 256)
+        # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
         x_chunk_bf16_0_offset = (b0_0 + tl.arange(0, 4))[:, None] * hidden_states_0_stride_0 + (k0_7 + tl.arange(0, 256))[None, :] * hidden_states_0_stride_1
         x_chunk_bf16_0 = tl.load(hidden_states_0_ptr + x_chunk_bf16_0_offset)
         x_chunk_7 = x_chunk_bf16_0.to(tl.float32)
+        # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
         gamma_0_offset = (0 + tl.arange(0, 1))[:, None] * input_rms_weight_0_stride_0 + (k0_7 + tl.arange(0, 256))[None, :] * input_rms_weight_0_stride_1
         gamma_0 = tl.load(input_rms_weight_0_ptr + gamma_0_offset)
         _t5 = x_chunk_7 * inv_rms_tile_0
         normed_0 = _t5 * gamma_0
+        # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
         wq_chunk_0_offset = (k0_7 + tl.arange(0, 256))[:, None] * wq_0_stride_0 + (q0_0 + tl.arange(0, 64))[None, :] * wq_0_stride_1
         wq_chunk_0 = tl.load(wq_0_ptr + wq_chunk_0_offset)
         _t6 = normed_0.to(tl.bfloat16)

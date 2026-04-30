@@ -13,6 +13,7 @@ def qwen3_decode_layer_incore_0(
     sq_sum_1 = sq_sum_0 * 0
     for kb_0 in range(20):
         k0_0 = (kb_0 * 256)
+        # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
         _t0_offset = (0 + tl.arange(0, 16))[:, None] * hidden_states_0_stride_0 + (k0_0 + tl.arange(0, 256))[None, :] * hidden_states_0_stride_1
         _t0 = tl.load(hidden_states_0_ptr + _t0_offset)
         x_chunk_0 = _t0.to(tl.float32)

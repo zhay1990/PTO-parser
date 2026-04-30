@@ -15,8 +15,10 @@ def qwen3_decode_layer_incore_8(
     ob_6_out = tl.program_id(axis = 0)
     ob_6_in = tl.program_id(axis = 1)
     o0_6 = ((0 + (((ob_6_out * 4) + ob_6_in) * 1)) * 64)
+    # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
     _t58_offset = (0 + tl.arange(0, 4))[:, None] * down_proj_tile_3_stride_0 + (o0_6 + tl.arange(0, 64))[None, :] * down_proj_tile_3_stride_1
     _t58 = tl.load(down_proj_tile_3_ptr + _t58_offset)
+    # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
     _t59_offset = (0 + tl.arange(0, 4))[:, None] * resid1_tile_iter_1_outer_l0_rv_stride_0 + (o0_6 + tl.arange(0, 64))[None, :] * resid1_tile_iter_1_outer_l0_rv_stride_1
     _t59 = tl.load(resid1_tile_iter_1_outer_l0_rv_ptr + _t59_offset)
     down_acc_0 = _t58 + _t59

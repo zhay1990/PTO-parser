@@ -14,11 +14,14 @@ def qwen3_decode_layer_incore_7(
 ):
     dob_0_out = tl.program_id(axis = 0)
     dob_0_in = tl.program_id(axis = 1)
+    # 实际尺寸和原始尺寸一致, 不需要mask
     mlp_chunk_bf16_0_offset = (tl.arange(0, 4))[:, None] * mlp_chunk_bf16_0_stride_0 + (tl.arange(0, 32))[None, :] * mlp_chunk_bf16_0_stride_1
     mlp_chunk_bf16_0 = tl.load(mlp_chunk_bf16_0_ptr + mlp_chunk_bf16_0_offset)
     d0_0 = ((0 + (((dob_0_out * 4) + dob_0_in) * 1)) * 64)
+    # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
     down_prev_0_offset = (0 + tl.arange(0, 4))[:, None] * down_proj_tile_6_stride_0 + (d0_0 + tl.arange(0, 64))[None, :] * down_proj_tile_6_stride_1
     down_prev_0 = tl.load(down_proj_tile_6_ptr + down_prev_0_offset)
+    # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
     w_down_chunk_0_offset = (o0_3 + tl.arange(0, 32))[:, None] * w_down_0_stride_0 + (d0_0 + tl.arange(0, 64))[None, :] * w_down_0_stride_1
     w_down_chunk_0 = tl.load(w_down_0_ptr + w_down_chunk_0_offset)
     _t57 = tl.dot(mlp_chunk_bf16_0, w_down_chunk_0)

@@ -12,8 +12,10 @@ def qwen3_decode_layer_incore_5(
     #pypto.language.Tensor[[16, 8192],pypto.language.FP32]
     attn_out_3_ptr, attn_out_3_stride_0, attn_out_3_stride_1, # Output ptr
 ):
+    # 实际尺寸和原始尺寸一致, 不需要mask
     attn_out_iter_1_offset = (tl.arange(0, 16))[:, None] * attn_out_iter_1_stride_0 + (tl.arange(0, 8192))[None, :] * attn_out_iter_1_stride_1
     attn_out_iter_1 = tl.load(attn_out_iter_1_ptr + attn_out_iter_1_offset)
+    # 实际尺寸和原始尺寸一致, 不需要mask
     attn_row_iter_2_outer_l0_rv_offset = (tl.arange(0, 1))[:, None] * attn_row_iter_2_outer_l0_rv_stride_0 + (tl.arange(0, 8192))[None, :] * attn_row_iter_2_outer_l0_rv_stride_1
     attn_row_iter_2_outer_l0_rv = tl.load(attn_row_iter_2_outer_l0_rv_ptr + attn_row_iter_2_outer_l0_rv_offset)
     attn_out_iter_1_offset_ = (tl.arange(0, 16))[:, None] * attn_out_iter_1_stride_0 + (tl.arange(0, 8192))[None, :] * attn_out_iter_1_stride_1

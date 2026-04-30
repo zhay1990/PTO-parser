@@ -21,13 +21,16 @@ def qwen3_decode_layer_incore_6(
     o_acc_1 = o_acc_0 * 0
     for kb_13 in range(20):
         k0_19 = (kb_13 * 256)
+        # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
         _t41_offset = (b0_1 + tl.arange(0, 4))[:, None] * attn_out_2_stride_0 + (k0_19 + tl.arange(0, 256))[None, :] * attn_out_2_stride_1
         _t41 = tl.load(attn_out_2_ptr + _t41_offset)
         a_chunk_0 = _t41.to(tl.bfloat16)
+        # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
         w_chunk_0_offset = (k0_19 + tl.arange(0, 256))[:, None] * wo_0_stride_0 + (o0_0 + tl.arange(0, 64))[None, :] * wo_0_stride_1
         w_chunk_0 = tl.load(wo_0_ptr + w_chunk_0_offset)
         _t42 = tl.dot(a_chunk_0, w_chunk_0)
         o_acc_1 = o_acc_1 + _t42
+    # 因为输入的PTO源码没有边界检查, 所以没有为这个tl.load生成Mask
     _t43_offset = (b0_1 + tl.arange(0, 4))[:, None] * hidden_states_0_stride_0 + (o0_0 + tl.arange(0, 64))[None, :] * hidden_states_0_stride_1
     _t43 = tl.load(hidden_states_0_ptr + _t43_offset)
     resid_0 = _t43.to(tl.float32)

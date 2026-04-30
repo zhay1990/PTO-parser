@@ -138,6 +138,9 @@ static PTO_TYPE parse_type_str(const std::string& str, const STR_PTO_TYPE_MAP& v
                         SPDLOG_ERROR("Variable {} at line is not defined as a dynamic", dimension, row_);
                     }
                     else {
+                        while (dynamicShape.size() < shape.size() - 1) {
+                            dynamicShape.emplace_back("");
+                        }
                         dynamicShape.emplace_back(dimension);
                     }
                 }
@@ -161,6 +164,9 @@ static PTO_TYPE parse_type_str(const std::string& str, const STR_PTO_TYPE_MAP& v
                         SPDLOG_ERROR("Variable {} at line is not defined as a dynamic", temp, row_);
                     }
                     else {
+                        while (dynamicShape.size() < shape.size() - 1) {
+                            dynamicShape.emplace_back("");
+                        }
                         dynamicShape.emplace_back(temp);
                     }
                 }
@@ -508,6 +514,9 @@ void PTO_CALL::infer_type(STR_PTO_TYPE_MAP& validVar) {
                     SPDLOG_ERROR("Variable {} at line {} is not a dynamic", var->to_string(), var->row());
                 }
                 else {
+                    while (dynamicShape.size() < shape.size() - 1) {
+                        dynamicShape.emplace_back("");
+                    }
                     dynamicShape.emplace_back(var->to_string());
                 }
             }
